@@ -24,6 +24,33 @@ function useHashRoute() {
   return hash;
 }
 
+/** Adds `.in` to `.reveal` sections once they scroll into view (one-shot). */
+function useReveal(route: string) {
+  useEffect(() => {
+    if (!("IntersectionObserver" in window)) return;
+    document.documentElement.classList.add("js-reveal");
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries)
+          if (e.isIntersecting) {
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+          }
+      },
+      { rootMargin: "0px 0px -8% 0px" },
+    );
+    const scan = () => document.querySelectorAll(".reveal:not(.in)").forEach((el) => io.observe(el));
+    scan();
+    const mo = new MutationObserver(scan);
+    const main = document.querySelector("main");
+    if (main) mo.observe(main, { childList: true, subtree: true });
+    return () => {
+      io.disconnect();
+      mo.disconnect();
+    };
+  }, [route]);
+}
+
 function useScrolled() {
   const [s, setS] = useState(false);
   useEffect(() => {
@@ -68,6 +95,7 @@ export default function App() {
 function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOut: () => void }) {
   const isAdmin = user.role === "admin";
   const scrolled = useScrolled();
+  useReveal(route);
   const [pending, setPending] = useState({ actions: 0, optimum: 0 });
 
   useEffect(() => {

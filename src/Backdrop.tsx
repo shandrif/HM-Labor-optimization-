@@ -15,13 +15,10 @@ type Layer = {
   base?: number; // base rotation
 };
 
-const BLOBS: (Layer & { cls: string })[] = [
-  { cls: "blob b1", depth: 40, scroll: 0.18 },
-  { cls: "blob b2", depth: -50, scroll: 0.3 },
-  { cls: "blob b3", depth: 30, scroll: 0.1 },
-  { cls: "blob b4", depth: -26, scroll: 0.4 },
-  { cls: "blob b5", depth: 18, scroll: 0.22 },
-];
+// Colour fields are painted once as a static background on .backdrop (no moving
+// layers): moving ~1000px gradient layers under glass was too heavy for some
+// browsers (tab crashes on Safari / low-memory phones).
+const BLOBS: (Layer & { cls: string })[] = [];
 const SHAPES: (Layer & { cls: string; text?: string })[] = [
   { cls: "half h1", depth: 64, scroll: 0.45, spin: 10, base: -8 },
   { cls: "half h2", depth: -48, scroll: 0.6, spin: -26, base: 14 },
@@ -117,6 +114,7 @@ export default function Backdrop() {
         grid.current.style.setProperty("--gx", `${cur.px.toFixed(0)}px`);
         grid.current.style.setProperty("--gy", `${cur.py.toFixed(0)}px`);
         grid.current.style.opacity = cur.glow.toFixed(3);
+        grid.current.style.visibility = cur.glow > 0.01 ? "visible" : "hidden";
         // grid drifts slightly with scroll so it feels attached to the page
         grid.current.style.backgroundPosition = `0 ${(-cur.sy * 0.15).toFixed(1)}px`;
       }
@@ -184,7 +182,6 @@ export default function Backdrop() {
         </div>
       ))}
       <div className="dotgrid" ref={grid} />
-      <div className="grain" />
     </div>
   );
 }

@@ -25,6 +25,7 @@
 
   /* glass materials */
   --glass: rgba(255, 252, 247, 0.5);
+  --surface: linear-gradient(160deg, rgba(255, 253, 249, 0.86), rgba(252, 247, 240, 0.78));
   --glass-strong: rgba(255, 252, 247, 0.74);
   --glass-chrome: rgba(255, 252, 247, 0.6);
   --glass-edge: rgba(255, 255, 255, 0.85);
@@ -77,6 +78,7 @@
     --accent-soft: rgba(212, 179, 139, 0.16);
     --ring: rgba(212, 179, 139, 0.55);
     --glass: rgba(36, 33, 28, 0.5);
+    --surface: linear-gradient(160deg, rgba(42, 38, 33, 0.86), rgba(32, 29, 25, 0.8));
     --glass-strong: rgba(40, 36, 31, 0.78);
     --glass-chrome: rgba(33, 30, 26, 0.62);
     --glass-edge: rgba(255, 255, 255, 0.09);
@@ -138,13 +140,18 @@ p { margin: 0; }
 .warn-text { color: var(--over); }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
-/* Glass material */
+/* Glass material
+   Live blur only on floating chrome (nav, dialogs, toasts) where content moves
+   underneath. Page surfaces use a frosted fill: same look, far lighter for the
+   browser (live blur on tall cards caused tab crashes on Safari / phones). */
 .glass, .card, .kpi, .topbar-inner, .dialog, .toast, .login {
-  background: var(--glass);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(170%);
-  backdrop-filter: blur(var(--blur)) saturate(170%);
+  background: var(--surface);
   border: 1px solid var(--hairline);
   box-shadow: inset 0 1px 0 var(--glass-edge), var(--shadow);
+}
+.topbar-inner, .dialog, .toast {
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(170%);
+  backdrop-filter: blur(var(--blur)) saturate(170%);
 }
 
 /* ==========================================================================
@@ -210,7 +217,7 @@ p { margin: 0; }
 main { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s5) var(--s7); }
 
 /* Page entrance — one choreographed entrance per page */
-.page > * { animation: enter 420ms var(--ease-out) both; }
+.page > * { animation: enter 420ms var(--ease-out) backwards; }
 .page > *:nth-child(1) { animation-delay: 0ms; }
 .page > *:nth-child(2) { animation-delay: 40ms; }
 .page > *:nth-child(3) { animation-delay: 75ms; }
@@ -219,15 +226,9 @@ main { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s5) var(--s7)
 .page > *:nth-child(n + 6) { animation-delay: 150ms; }
 @keyframes enter { from { opacity: 0; transform: translateY(8px); } }
 
-/* Scroll reveal for sections below the fold (progressive enhancement) */
-@supports (animation-timeline: view()) {
-  .reveal {
-    animation: reveal linear both;
-    animation-timeline: view();
-    animation-range: entry 0% entry 40%;
-  }
-  @keyframes reveal { from { opacity: 0; transform: translateY(16px) scale(0.99); } }
-}
+/* Scroll reveal: plays once when a section enters view, then releases its layer */
+.js-reveal .reveal:not(.in) { opacity: 0; transform: translateY(16px); }
+.js-reveal .reveal.in { transition: opacity 520ms var(--ease-out), transform 520ms var(--ease-out); }
 
 /* ==========================================================================
    Layout blocks
@@ -243,7 +244,7 @@ main { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s5) var(--s7)
 @media (hover: hover) and (pointer: fine) { .back:hover svg { transform: translateX(-2px); } }
 
 .card { border-radius: var(--r-lg); padding: var(--s5); margin-bottom: var(--s4); }
-.card.flush { padding: 0; overflow: hidden; }
+.card.flush { padding: 0; overflow: clip; }
 .card.narrow { max-width: 440px; }
 .cardhead { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); margin-bottom: var(--s4); flex-wrap: wrap; }
 .card.flush .cardhead { padding: var(--s5) var(--s5) 0; }
@@ -282,7 +283,12 @@ main { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s5) var(--s7)
    Tables
    ========================================================================== */
 .tablewrap { overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
-.tablewrap.tall { max-height: min(72vh, 900px); overflow: auto; }
+.tablewrap.tall { max-height: none; }
+@media (min-width: 1180px) {
+  /* no nested scroll box: the table scrolls with the page, header sticks under the nav */
+  .tablewrap.tall { overflow: visible; }
+  .tablewrap.tall .grid thead th { top: 78px; }
+}
 table { width: 100%; border-collapse: separate; border-spacing: 0; }
 th, td { padding: 11px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--hairline-2); }
 th {
@@ -436,7 +442,7 @@ button.quiet { background: transparent; border-color: transparent; box-shadow: n
 /* ==========================================================================
    Login
    ========================================================================== */
-.login { width: 100%; max-width: 380px; display: flex; flex-direction: column; border-radius: var(--r-xl); padding: var(--s6); box-shadow: inset 0 1px 0 var(--glass-edge), var(--shadow-lg); animation: materialise 520ms var(--ease-out) both; }
+.login { width: 100%; max-width: 380px; display: flex; flex-direction: column; border-radius: var(--r-xl); padding: var(--s6); box-shadow: inset 0 1px 0 var(--glass-edge), var(--shadow-lg); animation: materialise 520ms var(--ease-out) backwards; }
 .login .brand { margin-bottom: var(--s5); }
 .login h1 { font-size: 22px; margin-bottom: 4px; }
 .login p { color: var(--text-2); margin-bottom: var(--s5); }
@@ -545,7 +551,7 @@ details summary { cursor: pointer; margin: 6px 0; font-weight: 540; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
   .page > *, .login { animation: fade 200ms ease both !important; animation-delay: 0ms !important; }
-  .reveal { animation: none !important; }
+  .js-reveal .reveal:not(.in) { transform: none; }
   .nav-indicator { transition: none; }
   .dialog, .toast, .panel { transform: none !important; filter: none !important; }
   button:active:not(:disabled) { transform: none; }
@@ -594,16 +600,22 @@ td.num { white-space: nowrap; }
   }
 }
 .shell, .center { position: relative; z-index: 1; }
-.backdrop { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; contain: strict; }
-.backdrop > [data-layer] { position: absolute; will-change: transform; }
+.backdrop {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; contain: strict;
+  /* static colour fields: one painted background, no extra GPU layers */
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.11 0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0.12 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") 0 0 / 160px 160px,
+    radial-gradient(42vw 42vw at 12vw 4vw, var(--blob-tan), transparent 70%),
+    radial-gradient(36vw 36vw at calc(100vw - 10vw) 18vw, var(--blob-teal), transparent 70%),
+    radial-gradient(28vw 28vw at 55vw 22vw, var(--blob-cream), transparent 70%),
+    radial-gradient(46vw 46vw at 58vw calc(50vh + 36vw), var(--blob-tan), transparent 70%),
+    radial-gradient(26vw 26vw at 14vw calc(58vh + 20vw), var(--blob-deep), transparent 70%),
+    var(--bg);
+}
+.backdrop > [data-layer] { position: absolute; }
+/* only the small moving shapes get their own layer */
+.backdrop > .half, .backdrop > .bar, .backdrop > .dot { will-change: transform; }
 
-/* colour fields */
-.blob { border-radius: 50%; }
-.b1 { width: 64vw; height: 64vw; left: -20vw; top: -28vw; background: radial-gradient(closest-side, var(--blob-tan), transparent); }
-.b2 { width: 56vw; height: 56vw; right: -18vw; top: -4vh; background: radial-gradient(closest-side, var(--blob-teal), transparent); }
-.b3 { width: 72vw; height: 72vw; left: 22vw; top: 50vh; background: radial-gradient(closest-side, var(--blob-tan), transparent 72%); opacity: 0.8; }
-.b4 { width: 40vw; height: 40vw; left: -6vw; top: 58vh; background: radial-gradient(closest-side, var(--blob-deep), transparent); }
-.b5 { width: 46vw; height: 46vw; left: 32vw; top: 4vh; background: radial-gradient(closest-side, var(--blob-cream), transparent); }
 
 /* brand motifs */
 .half { border-radius: 999px 999px 0 0; }             /* ½ motif: half disc */
@@ -634,19 +646,13 @@ td.num { white-space: nowrap; }
 
 /* cursor: dot grid spotlight */
 .dotgrid {
-  position: absolute; inset: -40px 0; opacity: 0;
+  position: absolute; inset: -40px 0; opacity: 0; visibility: hidden;
   background-image: radial-gradient(var(--dot) 1.1px, transparent 1.5px);
   background-size: 20px 20px;
   --gx: -999px; --gy: -999px;
   -webkit-mask-image: radial-gradient(230px circle at var(--gx) calc(var(--gy) + 40px), #000 0%, rgba(0, 0, 0, 0.4) 45%, transparent 75%);
   mask-image: radial-gradient(230px circle at var(--gx) calc(var(--gy) + 40px), #000 0%, rgba(0, 0, 0, 0.4) 45%, transparent 75%);
 }
-/* static paper grain for texture */
-.grain {
-  position: absolute; inset: 0; opacity: var(--grain-opacity); mix-blend-mode: multiply;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.11 0 0 0 0 0.1 0 0 0 0 0.09 0 0 0 0.55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-@media (prefers-color-scheme: dark) { .grain { mix-blend-mode: screen; } }
 
 @media (max-width: 640px) {
   .r1 { width: 280px; height: 280px; }
@@ -659,7 +665,7 @@ td.num { white-space: nowrap; }
   .dotgrid { display: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .backdrop > :not(.grain) { display: none; }
+  .backdrop > * { display: none; }
 }
 .backdrop[data-lite] .dotgrid { display: none; }
 .backdrop[data-lite] > [data-layer] { will-change: auto; }
@@ -693,3 +699,8 @@ td.num { white-space: nowrap; }
 .sp-name { font-weight: 560; color: var(--text); }
 .sp-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-none { padding: 12px; font-size: 13px; }
+
+/* phones: solid frosted cards instead of live blur (nav and dialogs keep blur) */
+@media (max-width: 760px), (pointer: coarse) {
+  .dotgrid { display: none; }
+}
