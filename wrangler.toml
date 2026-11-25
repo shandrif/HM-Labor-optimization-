@@ -1,0 +1,13 @@
+name = "hm-labor"
+compatibility_date = "2026-11-01"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hm-labor-db"
+database_id = "b8438540-1e88-4102-b70a-16dd7ac7af2a"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "hm-labor-files"
