@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type User } from "../api";
+import { api, cachedApi, type User } from "../api";
 import { dialog, Icon, PageSkeleton, toast } from "../ui";
 import {
   ACTION_LABEL,
@@ -11,6 +11,7 @@ import {
   suggestTransfers,
   type BranchRow,
   type RoleKey,
+  fmtWhen,
 } from "../calc";
 
 type Branch = { code: string; name: string; region: string | null };
@@ -287,7 +288,7 @@ export function ActionForm({
             min={Math.max(1, picked.length)}
             max={100}
             value={f.qty}
-            onChange={(e) => set({ qty: Math.max(1, picked.length, parseInt(e.target.value || "1", 10)) })}
+            onChange={(e) => set({ qty: Math.min(100, Math.max(1, picked.length, parseInt(e.target.value, 10) || 1)) })}
           />
         </label>
         {f.type === "hire" && (
@@ -385,7 +386,7 @@ export function ActionList({ list, user, names, onChange }: { list: any[]; user:
               <td className="small nowrap">{a.effective_date || <span className="muted">—</span>}</td>
               <td className="small nowrap">
                 {a.requested_by_name}
-                <div className="muted">{a.created_at?.slice(0, 16)}</div>
+                <div className="muted">{fmtWhen(a.created_at)}</div>
               </td>
               <td className="small" style={{ maxWidth: 260 }}>
                 {a.reason || <span className="muted">—</span>}
@@ -455,7 +456,7 @@ export default function Actions({ user }: { user: User }) {
 
   const load = () => {
     api(`/actions?status=${status}`).then((r) => setList(r.actions)).catch((e) => setError(e.message));
-    api("/dashboard").then(setDash).catch((e) => setError(e.message));
+    cachedApi("/dashboard").then(setDash).catch((e) => setError(e.message));
   };
   useEffect(load, [status]);
 

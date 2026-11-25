@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type User } from "../api";
-import { fmtPct, fmtSar, ROLES, ROLE_SHORT } from "../calc";
+import { fmtPct, fmtSar, ROLES, ROLE_SHORT, fmtWhen } from "../calc";
 import { dialog, PageSkeleton, toast } from "../ui";
 
 export default function Approvals({ user }: { user: User }) {
@@ -98,7 +98,7 @@ export default function Approvals({ user }: { user: User }) {
                     </td>
                     <td className="small">
                       {r.requested_by_name}
-                      <div className="muted">{r.created_at?.slice(0, 16)}</div>
+                      <div className="muted">{fmtWhen(r.created_at)}</div>
                     </td>
                     <td className="small">{r.reason || <span className="muted">—</span>}</td>
                     <td>

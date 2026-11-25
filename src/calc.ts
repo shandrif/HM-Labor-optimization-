@@ -184,3 +184,12 @@ export function suggestTransfers(rows: Computed[]): Suggestion[] {
   }
   return out;
 }
+
+/** Server timestamps are UTC "YYYY-MM-DD HH:MM:SS"; show them in the viewer's local time. */
+const dtf = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const df = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+export function fmtWhen(utc: string | null | undefined, dateOnly = false) {
+  if (!utc) return "—";
+  const d = new Date(utc.replace(" ", "T") + (utc.length <= 19 ? "Z" : ""));
+  return isNaN(+d) ? utc : (dateOnly ? df : dtf).format(d);
+}

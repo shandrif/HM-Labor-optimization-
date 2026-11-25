@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
-import { api, type User } from "../api";
+import { api, cachedApi, type User } from "../api";
 import { compute, fmt, fmtPct, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_SHORT, totals, type BranchRow, type Computed } from "../calc";
 import { Icon, PageSkeleton } from "../ui";
 
@@ -48,7 +47,7 @@ export default function Dashboard({ user }: { user: User }) {
   }, [state]);
 
   useEffect(() => {
-    api("/dashboard").then(setData).catch((e) => setError(e.message));
+    cachedApi("/dashboard").then(setData).catch((e) => setError(e.message));
   }, []);
 
   const all = useMemo(() => {
@@ -107,7 +106,7 @@ export default function Dashboard({ user }: { user: User }) {
     </th>
   );
 
-  const exportXlsx = () => {
+  const exportXlsx = async () => {
     const out = rows.map((b) => ({
       Code: b.code,
       Branch: b.name,
@@ -118,20 +117,31 @@ export default function Dashboard({ user }: { user: User }) {
       Tier: b.size_tier,
       Type: b.store_type,
       ADS: Math.round(b.ads),
-      ...Object.fromEntries(ROLES.map((r) => [`Actual ${ROLE_SHORT[r]}`, b[`act_${r}`] ?? ""])),
-      "Actual HC": b.hasActual ? b.actual : "",
-      ...Object.fromEntries(ROLES.map((r) => [`Optimum ${ROLE_SHORT[r]}`, b[`opt_${r}`] ?? ""])),
-      "Optimum HC": b.hasOptimum ? b.optimum : "",
-      "Net Req": b.hasActual && b.hasOptimum ? b.gap : "",
+      ...Object.fromEntries(ROLES.map((r) => [`Actual ${ROLE_SHORT[r]}`, b[`act_${r}`] ?? null])),
+      "Actual HC": b.hasActual ? b.actual : null,
+      ...Object.fromEntries(ROLES.map((r) => [`Optimum ${ROLE_SHORT[r]}`, b[`opt_${r}`] ?? null])),
+      "Optimum HC": b.hasOptimum ? b.optimum : null,
+      "Net Req": b.hasActual && b.hasOptimum ? b.gap : null,
       "Planned actions": b.planned,
-      "Gap after actions": b.hasActual && b.hasOptimum ? b.projGap : "",
-      "Actual Prod/Head": b.actProd ? Math.round(b.actProd) : "",
-      "Optimum Prod/Head": b.optProd ? Math.round(b.optProd) : "",
-      "Change %": b.change != null ? Math.round(b.change * 1000) / 10 : "",
+      "Gap after actions": b.hasActual && b.hasOptimum ? b.projGap : null,
+      "Actual Prod/Head": b.actProd ? Math.round(b.actProd) : null,
+      "Optimum Prod/Head": b.optProd ? Math.round(b.optProd) : null,
+      "Change %": b.change != null ? Math.round(b.change * 1000) / 10 : null,
     }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), "Branches");
-    XLSX.writeFile(wb, `labor-optimization-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    if (!out.length) return;
+    // loaded on demand: keeps the Excel writer out of the initial download
+    const { default: writeXlsxFile } = await import("write-excel-file");
+    const headers = Object.keys(out[0]);
+    const data = [
+      headers.map((h) => ({ value: h, fontWeight: "bold" as const })),
+      ...out.map((r) =>
+        headers.map((h) => {
+          const v = (r as Record<string, unknown>)[h];
+          return v == null ? null : typeof v === "number" ? { type: Number, value: v } : { type: String, value: String(v) };
+        }),
+      ),
+    ];
+    await writeXlsxFile(data as any, { fileName: `labor-optimization-${new Date().toISOString().slice(0, 10)}.xlsx` });
   };
 
   return (

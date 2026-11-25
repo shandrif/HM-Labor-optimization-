@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type User } from "../api";
-import { fmt, ROLES, ROLE_SHORT } from "../calc";
+import { api, cachedApi, type User } from "../api";
+import { fmt, ROLES, ROLE_SHORT, fmtWhen } from "../calc";
 import { dialog, Icon, PageSkeleton, toast } from "../ui";
 import { codeFromLocation, parseHeadcountFile, suggestBranch, type Parsed } from "../headcountParser";
 
@@ -25,7 +25,7 @@ export default function Uploads({ user }: { user: User }) {
   const load = () => {
     api("/uploads").then((r) => setUploads(r.uploads)).catch((e) => setError(e.message));
     if (isAdmin) {
-      api("/dashboard").then((r) => setBranches(r.branches));
+      cachedApi("/dashboard").then((r) => setBranches(r.branches));
       api("/location-map").then((r) => setSaved(new Map(r.map.map((m: any) => [m.location, m.branch_code]))));
     }
   };
@@ -294,7 +294,7 @@ export default function Uploads({ user }: { user: User }) {
                   <td className="num">{fmt(u.branch_staff ?? 0)}</td>
                   <td className="num">{u.employees ? fmt(u.employees) : "—"}</td>
                   <td className="small">
-                    {u.uploaded_by ?? "system"} · {u.created_at?.slice(0, 16)}
+                    {u.uploaded_by ?? "system"} · {fmtWhen(u.created_at)}
                   </td>
                   {isAdmin && (
                     <td>

@@ -5,6 +5,9 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-11-01",
   "workers_dev": true,
+  // run the API next to the D1 database (ENAM) instead of next to the user:
+  // pages make several queries, so this turns many long round trips into one
+  "placement": { "mode": "smart" },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

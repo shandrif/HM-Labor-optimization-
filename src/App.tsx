@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, type User } from "./api";
+import { api, clearApiCache, type User } from "./api";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import BranchDetail from "./pages/BranchDetail";
@@ -100,8 +100,8 @@ function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOu
 
   useEffect(() => {
     if (!isAdmin) return;
-    Promise.all([api("/actions?status=pending"), api("/requests?status=pending")])
-      .then(([a, r]) => setPending({ actions: a.actions.length, optimum: r.requests.length }))
+    api("/pending")
+      .then((r) => setPending({ actions: r.actions, optimum: r.optimum }))
       .catch(() => {});
   }, [route, isAdmin]);
 
@@ -146,6 +146,7 @@ function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOu
               aria-label="Sign out"
               onClick={async () => {
                 await api("/logout", { method: "POST" }).catch(() => {});
+                clearApiCache();
                 onSignOut();
               }}
             >

@@ -87,3 +87,20 @@ Create a user from the command line (e.g. a first admin):
 node scripts/hash-password.mjs <username> "<Full Name>" admin '<password>' > seed/user.sql
 npx wrangler d1 execute hm-labor-db --remote --file seed/user.sql
 ```
+
+## Security & performance
+
+- All SQL uses bound parameters (no string-built queries); staff search uses `instr()` (no LIKE wildcards).
+- Sessions: random 256-bit token, stored hashed, `HttpOnly; Secure; SameSite=Strict`, 7-day expiry.
+- Passwords: PBKDF2-SHA256, 100k iterations, per-user salt. Login throttling: 8 failures per account
+  or 30 per IP within 15 min → 15 min lock.
+- Cross-site requests with a foreign `Origin` are rejected; CSP, HSTS, no-framing and nosniff headers
+  (`public/_headers` for pages and assets, middleware for the API). API responses are `no-store`.
+- Role checks on the server for every write; viewers never receive employee names.
+- Status changes (approve/reject/complete/cancel) are atomic, so double clicks can't double-apply.
+- D1 lives in ENAM; the Worker uses Smart Placement and each page loads with one batched D1 round trip.
+- Hashed assets are cached for a year; the Excel reader/writer load on demand.
+
+Tests (local dev server only): `node tests/security.mjs <admin-password>` (62 checks: SQL injection,
+auth bypass, privilege escalation, brute force, CSRF, XSS, path tampering, malformed input, headers)
+and `node tests/load.cjs <admin-password>` (autocannon load test).

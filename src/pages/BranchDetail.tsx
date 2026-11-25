@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type User } from "../api";
-import { fmt, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey } from "../calc";
+import { api, cachedApi, type User } from "../api";
+import { fmt, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey, fmtWhen } from "../calc";
 import { Icon, PageSkeleton, toast } from "../ui";
 import { ActionForm, ActionList } from "./Actions";
 import { Delta } from "./Dashboard";
@@ -26,7 +26,7 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
     load();
   }, [code]);
   useEffect(() => {
-    api("/dashboard").then((r) => {
+    cachedApi("/dashboard").then((r) => {
       setBranchList(r.branches);
       setNames(new Map(r.branches.map((b: any) => [b.code, b.name])));
     });
@@ -291,7 +291,7 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                         inputMode="numeric"
                         aria-label={`New optimum ${ROLE_LABEL[r]}`}
                         value={edit[r]}
-                        onChange={(e) => setEdit({ ...edit, [r]: Math.max(0, parseInt(e.target.value || "0", 10)) })}
+                        onChange={(e) => setEdit({ ...edit, [r]: Math.min(500, Math.max(0, parseInt(e.target.value, 10) || 0)) })}
                       />
                     </td>
                   ))}
@@ -330,7 +330,7 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
             {act && act.other > 0 && <>Plus {act.other} staff with other titles at this location (not counted). </>}
             {(opt as any)?.updated_by_name && (
               <>
-                Optimum last set by {(opt as any).updated_by_name} on {(opt as any).updated_at?.slice(0, 10)}.
+                Optimum last set by {(opt as any).updated_by_name} on {fmtWhen((opt as any).updated_at, true)}.
               </>
             )}
           </p>
@@ -426,7 +426,7 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                   <span>{ROLES.map((k) => `${ROLE_SHORT[k]} ${r[k]}`).join(" · ")}</span>
                 </div>
                 <div className="muted small">
-                  {r.requested_by_name} · {r.created_at?.slice(0, 16)}
+                  {r.requested_by_name} · {fmtWhen(r.created_at)}
                   {r.reason && <> · “{r.reason}”</>}
                   {r.reviewed_by_name && r.reviewed_by !== r.requested_by && <> · reviewed by {r.reviewed_by_name}</>}
                 </div>

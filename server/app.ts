@@ -15,6 +15,66 @@ const PBKDF2_ITER = 100_000;
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>().basePath("/api");
 
+// Security headers on every API response, no caching of private data
+app.use("*", async (c, next) => {
+  await next();
+  const h = c.res.headers;
+  h.set("Cache-Control", "no-store");
+  h.set("X-Content-Type-Options", "nosniff");
+  h.set("X-Frame-Options", "DENY");
+  h.set("Referrer-Policy", "same-origin");
+  h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+});
+
+// CSRF defence in depth (cookies are already SameSite=Strict): state-changing
+// requests must come from this site.
+app.use("*", async (c, next) => {
+  if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+    const origin = c.req.header("Origin");
+    const host = new URL(c.req.url).host;
+    if (origin && new URL(origin).host !== host) return c.json({ error: "Cross-site request blocked" }, 403);
+  }
+  await next();
+});
+
+class BadRequest extends Error {}
+async function body<T = any>(c: { req: { json: () => Promise<unknown> } }): Promise<T> {
+  try {
+    const v = await c.req.json();
+    if (v === null || typeof v !== "object") throw new Error();
+    return v as T;
+  } catch {
+    throw new BadRequest("Invalid request body");
+  }
+}
+
+// ---------- login throttling ----------
+const LOCK_USER = { fails: 8, windowMin: 15, lockMin: 15 };
+const LOCK_IP = { fails: 30, windowMin: 15, lockMin: 15 };
+const sqlNow = (offsetMin = 0) => new Date(Date.now() + offsetMin * 60000).toISOString().replace("T", " ").slice(0, 19);
+
+async function lockedFor(db: D1Database, key: string) {
+  const r = await db.prepare("SELECT locked_until FROM login_attempts WHERE key = ?").bind(key).first<{ locked_until: string | null }>();
+  return r?.locked_until && r.locked_until > sqlNow() ? r.locked_until : null;
+}
+async function recordFail(db: D1Database, key: string, rule: typeof LOCK_USER) {
+  const now = sqlNow();
+  const windowStart = sqlNow(-rule.windowMin);
+  await db
+    .prepare(
+      `INSERT INTO login_attempts (key, fails, window_start) VALUES (?, 1, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         fails = CASE WHEN window_start < ? THEN 1 ELSE fails + 1 END,
+         window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END`,
+    )
+    .bind(key, now, windowStart, windowStart, now)
+    .run();
+  await db
+    .prepare("UPDATE login_attempts SET locked_until = ? WHERE key = ? AND fails >= ?")
+    .bind(sqlNow(rule.lockMin), key, rule.fails)
+    .run();
+}
+
 // ---------- crypto helpers ----------
 const enc = new TextEncoder();
 const toHex = (b: ArrayBuffer | Uint8Array) =>
@@ -59,8 +119,14 @@ function cleanCounts(body: any): Counts | null {
 
 // ---------- auth ----------
 app.post("/login", async (c) => {
-  const { username, password } = await c.req.json<{ username: string; password: string }>();
-  if (!username || !password) return c.json({ error: "Username and password are required" }, 400);
+  const { username, password } = await body<{ username: string; password: string }>(c);
+  if (typeof username !== "string" || typeof password !== "string" || !username || !password || username.length > 60 || password.length > 200)
+    return c.json({ error: "Username and password are required" }, 400);
+  const db = c.env.DB;
+  const ip = c.req.header("CF-Connecting-IP") ?? "local";
+  const userKey = `u:${username.trim().toLowerCase()}`, ipKey = `ip:${ip}`;
+  if ((await lockedFor(db, userKey)) || (await lockedFor(db, ipKey)))
+    return c.json({ error: "Too many failed attempts. Try again in 15 minutes." }, 429);
   const u = await c.env.DB.prepare(
     "SELECT id, username, name, role, password_hash, salt, active FROM users WHERE username = ?",
   )
@@ -68,8 +134,11 @@ app.post("/login", async (c) => {
     .first<any>();
   const hash = u ? await hashPassword(password, u.salt) : await hashPassword(password, "00");
   if (!u || !u.active || !safeEqual(hash, u.password_hash)) {
+    await recordFail(db, userKey, LOCK_USER);
+    await recordFail(db, ipKey, LOCK_IP);
     return c.json({ error: "Invalid username or password" }, 401);
   }
+  await db.prepare("DELETE FROM login_attempts WHERE key = ?").bind(userKey).run();
   const token = randomHex(32);
   const expires = new Date(Date.now() + SESSION_DAYS * 864e5);
   await c.env.DB.batch([
@@ -123,8 +192,16 @@ const adminOnly = requireRole("admin");
 
 app.get("/me", (c) => c.json({ user: c.get("user") }));
 
+app.get("/pending", async (c) => {
+  const r = await c.env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM actions WHERE status = 'pending') AS actions,
+            (SELECT COUNT(*) FROM optimum_requests WHERE status = 'pending') AS optimum`,
+  ).first<{ actions: number; optimum: number }>();
+  return c.json(r ?? { actions: 0, optimum: 0 });
+});
+
 app.post("/me/password", async (c) => {
-  const { current, next } = await c.req.json<{ current: string; next: string }>();
+  const { current, next } = await body<{ current: string; next: string }>(c);
   if (!next || next.length < 8) return c.json({ error: "New password must be at least 8 characters" }, 400);
   const u = await c.env.DB.prepare("SELECT password_hash, salt FROM users WHERE id = ?")
     .bind(c.get("user").id)
@@ -147,78 +224,76 @@ async function latestUploadId(db: D1Database) {
 
 app.get("/dashboard", async (c) => {
   const db = c.env.DB;
-  const uploadId = await latestUploadId(db);
-  const upload = uploadId
-    ? await db
-        .prepare(
-          `SELECT h.id, h.period_label, h.file_name, h.employees, h.created_at, u.name AS uploaded_by
-           FROM headcount_uploads h LEFT JOIN users u ON u.id = h.uploaded_by WHERE h.id = ?`,
-        )
-        .bind(uploadId)
-        .first()
-    : null;
-  const { results } = await db
-    .prepare(
+  // one round trip to D1 for everything the dashboard needs
+  const LATEST = "(SELECT id FROM headcount_uploads ORDER BY id DESC LIMIT 1)";
+  const [up, br, ac] = await db.batch([
+    db.prepare(
+      `SELECT h.id, h.period_label, h.file_name, h.employees, h.created_at, u.name AS uploaded_by
+       FROM headcount_uploads h LEFT JOIN users u ON u.id = h.uploaded_by WHERE h.id = ${LATEST}`,
+    ),
+    db.prepare(
       `SELECT b.*,
         o.sm AS opt_sm, o.tl AS opt_tl, o.ba AS opt_ba, o.ca AS opt_ca, o.cl AS opt_cl,
         h.sm AS act_sm, h.tl AS act_tl, h.ba AS act_ba, h.ca AS act_ca, h.cl AS act_cl, h.other AS act_other,
         (SELECT COUNT(*) FROM optimum_requests r WHERE r.branch_code = b.code AND r.status = 'pending') AS pending
        FROM branches b
        LEFT JOIN optimum o ON o.branch_code = b.code
-       LEFT JOIN headcount h ON h.branch_code = b.code AND h.upload_id = ?
+       LEFT JOIN headcount h ON h.branch_code = b.code AND h.upload_id = ${LATEST}
        WHERE b.active = 1
        ORDER BY b.region, b.code`,
-    )
-    .bind(uploadId ?? -1)
-    .all();
-  const { results: actions } = await db
-    .prepare("SELECT id, type, from_branch, from_role, to_branch, to_role, qty FROM actions WHERE status = 'approved'")
-    .all();
-  return c.json({ upload, branches: results, actions });
+    ),
+    db.prepare("SELECT id, type, from_branch, from_role, to_branch, to_role, qty FROM actions WHERE status = 'approved'"),
+  ]);
+  return c.json({ upload: up.results[0] ?? null, branches: br.results, actions: ac.results });
 });
 
 app.get("/branches/:code", async (c) => {
   const db = c.env.DB;
   const code = c.req.param("code");
-  const branch = await db.prepare("SELECT * FROM branches WHERE code = ?").bind(code).first();
+  // one round trip to D1 for the whole branch page
+  const [br, op, hi, rq, ac] = await db.batch([
+    db.prepare("SELECT * FROM branches WHERE code = ?").bind(code),
+    db
+      .prepare(`SELECT o.*, u.name AS updated_by_name FROM optimum o LEFT JOIN users u ON u.id = o.updated_by WHERE o.branch_code = ?`)
+      .bind(code),
+    db
+      .prepare(
+        `SELECT h.*, up.period_label, up.created_at FROM headcount h JOIN headcount_uploads up ON up.id = h.upload_id
+         WHERE h.branch_code = ? ORDER BY up.id DESC LIMIT 12`,
+      )
+      .bind(code),
+    db
+      .prepare(
+        `SELECT r.*, ru.name AS requested_by_name, rv.name AS reviewed_by_name FROM optimum_requests r
+         JOIN users ru ON ru.id = r.requested_by LEFT JOIN users rv ON rv.id = r.reviewed_by
+         WHERE r.branch_code = ? ORDER BY r.id DESC LIMIT 20`,
+      )
+      .bind(code),
+    db
+      .prepare(
+        `SELECT a.*, ru.name AS requested_by_name, rv.name AS reviewed_by_name FROM actions a
+         JOIN users ru ON ru.id = a.requested_by LEFT JOIN users rv ON rv.id = a.reviewed_by
+         WHERE a.from_branch = ? OR a.to_branch = ? ORDER BY a.id DESC LIMIT 50`,
+      )
+      .bind(code, code),
+  ]);
+  const branch = br.results[0];
   if (!branch) return c.json({ error: "Branch not found" }, 404);
-  const optimum = await db
-    .prepare(
-      `SELECT o.*, u.name AS updated_by_name FROM optimum o LEFT JOIN users u ON u.id = o.updated_by
-       WHERE o.branch_code = ?`,
-    )
-    .bind(code)
-    .first();
-  const { results: history } = await db
-    .prepare(
-      `SELECT h.*, up.period_label, up.created_at FROM headcount h JOIN headcount_uploads up ON up.id = h.upload_id
-       WHERE h.branch_code = ? ORDER BY up.id DESC LIMIT 12`,
-    )
-    .bind(code)
-    .all();
-  const { results: requests } = await db
-    .prepare(
-      `SELECT r.*, ru.name AS requested_by_name, rv.name AS reviewed_by_name FROM optimum_requests r
-       JOIN users ru ON ru.id = r.requested_by LEFT JOIN users rv ON rv.id = r.reviewed_by
-       WHERE r.branch_code = ? ORDER BY r.id DESC LIMIT 20`,
-    )
-    .bind(code)
-    .all();
-  const { results: actions } = await db
-    .prepare(
-      `SELECT a.*, ru.name AS requested_by_name, rv.name AS reviewed_by_name FROM actions a
-       JOIN users ru ON ru.id = a.requested_by LEFT JOIN users rv ON rv.id = a.reviewed_by
-       WHERE a.from_branch = ? OR a.to_branch = ? ORDER BY a.id DESC LIMIT 50`,
-    )
-    .bind(code, code)
-    .all();
-  return c.json({ branch, optimum, history, requests, actions });
+  const hide = c.get("user").role === "viewer";
+  const actions = ac.results as any[];
+  return c.json({
+    branch,
+    optimum: op.results[0] ?? null,
+    history: hi.results,
+    requests: rq.results,
+    actions: hide ? actions.map((a) => ({ ...a, employee: a.employee ? "Hidden" : null, employee_nos: null })) : actions,
+  });
 });
 
 // Admin can edit branch master data (ADS, ATC, hours, tier, type, etc.)
 app.put("/branches/:code", adminOnly, async (c) => {
   const code = c.req.param("code");
-  const b = await c.req.json<any>();
+  const b = await body(c);
   const num = (v: any) => (v === "" || v == null || Number.isNaN(Number(v)) ? null : Number(v));
   await c.env.DB.prepare(
     `UPDATE branches SET name = ?, region = ?, city = ?, area_manager = ?, ops_lead = ?, working_hours = ?,
@@ -259,14 +334,14 @@ async function applyOptimum(db: D1Database, code: string, n: Counts, userId: num
 app.post("/branches/:code/optimum", requireRole("admin", "manager"), async (c) => {
   const db = c.env.DB;
   const code = c.req.param("code");
-  const body = await c.req.json<any>();
-  const n = cleanCounts(body);
+  const payload = await body(c);
+  const n = cleanCounts(payload);
   if (!n) return c.json({ error: "Each role must be a whole number between 0 and 500" }, 400);
   const exists = await db.prepare("SELECT code FROM branches WHERE code = ?").bind(code).first();
   if (!exists) return c.json({ error: "Branch not found" }, 404);
   const prev = (await db.prepare("SELECT * FROM optimum WHERE branch_code = ?").bind(code).first<any>()) ?? {};
   const user = c.get("user");
-  const reason = String(body.reason ?? "").slice(0, 1000);
+  const reason = String(payload.reason ?? "").slice(0, 1000);
 
   if (user.role === "admin") {
     await applyOptimum(db, code, n, user.id);
@@ -310,18 +385,19 @@ app.post("/requests/:id/:decision{approve|reject}", adminOnly, async (c) => {
   const db = c.env.DB;
   const id = Number(c.req.param("id"));
   const decision = c.req.param("decision");
-  const { note } = await c.req.json<{ note?: string }>().catch(() => ({ note: "" }));
+  const { note } = await body<{ note?: string }>(c).catch(() => ({ note: "" }));
   const r = await db.prepare("SELECT * FROM optimum_requests WHERE id = ?").bind(id).first<any>();
   if (!r) return c.json({ error: "Request not found" }, 404);
   if (r.status !== "pending") return c.json({ error: "Request was already reviewed" }, 409);
   const user = c.get("user");
-  if (decision === "approve") await applyOptimum(db, r.branch_code, r, user.id);
-  await db
+  const upd = await db
     .prepare(
-      "UPDATE optimum_requests SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = datetime('now') WHERE id = ?",
+      "UPDATE optimum_requests SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'",
     )
     .bind(decision === "approve" ? "approved" : "rejected", user.id, String(note ?? "").slice(0, 1000), id)
     .run();
+  if (!upd.meta.changes) return c.json({ error: "Request was already reviewed" }, 409);
+  if (decision === "approve") await applyOptimum(db, r.branch_code, r, user.id);
   await audit(db, user.id, `request_${decision}`, { id, code: r.branch_code });
   return c.json({ ok: true });
 });
@@ -373,6 +449,7 @@ app.post("/uploads", adminOnly, async (c) => {
   const label = String(payload.period_label ?? "").trim();
   if (!label) return c.json({ error: "Period label is required" }, 400);
   if (!Array.isArray(payload.rows) || payload.rows.length === 0) return c.json({ error: "No rows in upload" }, 400);
+  if (payload.rows.length > 5000) return c.json({ error: "Too many locations in upload" }, 400);
 
   const { results: codes } = await db.prepare("SELECT code FROM branches").all<{ code: string }>();
   const valid = new Set(codes.map((r) => r.code));
@@ -475,7 +552,7 @@ app.get("/uploads/:id/file", adminOnly, async (c) => {
   return new Response(obj.body, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="${(row.file_name ?? "headcount.xlsx").replace(/"/g, "")}"`,
+      "Content-Disposition": `attachment; filename="${(row.file_name ?? "headcount.xlsx").replace(/[^\w .()-]/g, "_").slice(0, 120)}"`,
     },
   });
 });
@@ -513,13 +590,14 @@ app.get("/actions", async (c) => {
      ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, a.id DESC LIMIT 500`,
   )
     .bind(status, status, status, branch, branch, branch)
-    .all();
-  return c.json({ actions: results });
+    .all<any>();
+  const hideNames = c.get("user").role === "viewer";
+  return c.json({ actions: hideNames ? results.map((a) => ({ ...a, employee: a.employee ? "Hidden" : null, employee_nos: null })) : results });
 });
 
 app.post("/actions", requireRole("admin", "manager"), async (c) => {
   const db = c.env.DB;
-  const b = await c.req.json<any>();
+  const b = await body(c);
   const user = c.get("user");
   const type = b.type;
   if (!ACTION_TYPES.includes(type)) return c.json({ error: "Invalid action type" }, 400);
@@ -591,16 +669,17 @@ app.post("/actions/:id/:op{approve|reject|complete|cancel}", requireRole("admin"
   if (op === "cancel" && user.role !== "admin" && (a.requested_by !== user.id || a.status !== "pending"))
     return c.json({ error: "You can only cancel your own pending requests" }, 403);
   if (!t.from.includes(a.status)) return c.json({ error: `Cannot ${op} an action that is ${a.status}` }, 409);
-  const { note } = await c.req.json<{ note?: string }>().catch(() => ({ note: "" }));
-  await db
+  const { note } = await body<{ note?: string }>(c).catch(() => ({ note: "" }));
+  const upd = await db
     .prepare(
       `UPDATE actions SET status = ?, reviewed_by = COALESCE(?, reviewed_by), review_note = COALESCE(NULLIF(?, ''), review_note),
          reviewed_at = CASE WHEN ? IN ('approve','reject') THEN datetime('now') ELSE reviewed_at END,
          completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
-       WHERE id = ?`,
+       WHERE id = ? AND status = ?`,
     )
-    .bind(t.to, op === "approve" || op === "reject" ? user.id : null, String(note ?? "").slice(0, 1000), op, op, id)
+    .bind(t.to, op === "approve" || op === "reject" ? user.id : null, String(note ?? "").slice(0, 1000), op, op, id, a.status)
     .run();
+  if (!upd.meta.changes) return c.json({ error: "This action was changed by someone else — refresh and try again" }, 409);
   await audit(db, user.id, `action_${op}`, { id });
   return c.json({ ok: true });
 });
@@ -610,7 +689,8 @@ app.get("/employees", requireRole("admin", "manager"), async (c) => {
   const db = c.env.DB;
   const branch = c.req.query("branch") ?? "";
   const role = c.req.query("role") ?? "";
-  const q = (c.req.query("q") ?? "").trim();
+  // plain substring search (instr): no LIKE wildcards, no pattern-length limits
+  const q = (c.req.query("q") ?? "").trim().slice(0, 100);
   const latest = await db
     .prepare("SELECT u.id, u.period_label FROM headcount_uploads u WHERE EXISTS (SELECT 1 FROM employees e WHERE e.upload_id = u.id) ORDER BY u.id DESC LIMIT 1")
     .first<{ id: number; period_label: string }>();
@@ -619,10 +699,10 @@ app.get("/employees", requireRole("admin", "manager"), async (c) => {
     .prepare(
       `SELECT emp_no, name, title, role, branch_code, joining_date, company FROM employees
        WHERE upload_id = ? AND (? = '' OR branch_code = ?) AND (? = '' OR role = ?)
-         AND (? = '' OR name LIKE ? OR emp_no LIKE ?)
+         AND (? = '' OR instr(lower(name), lower(?)) > 0 OR instr(emp_no, ?) > 0)
        ORDER BY name LIMIT 200`,
     )
-    .bind(latest.id, branch, branch, role, role, q, `%${q}%`, `%${q}%`)
+    .bind(latest.id, branch, branch, role, role, q, q, q)
     .all<any>();
   // flag staff already named in an open action
   const { results: open } = await db
@@ -645,7 +725,7 @@ app.get("/users", adminOnly, async (c) => {
 });
 
 app.post("/users", adminOnly, async (c) => {
-  const b = await c.req.json<any>();
+  const b = await body(c);
   const username = String(b.username ?? "").trim();
   const name = String(b.name ?? "").trim();
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) return c.json({ error: "Username: 3–40 letters, numbers, . _ -" }, 400);
@@ -666,7 +746,7 @@ app.post("/users", adminOnly, async (c) => {
 
 app.patch("/users/:id", adminOnly, async (c) => {
   const id = Number(c.req.param("id"));
-  const b = await c.req.json<any>();
+  const b = await body(c);
   const me = c.get("user");
   if (id === me.id && (b.role && b.role !== "admin" || b.active === false))
     return c.json({ error: "You cannot remove your own admin access" }, 400);
@@ -697,6 +777,7 @@ app.patch("/users/:id", adminOnly, async (c) => {
 });
 
 app.onError((err, c) => {
+  if (err instanceof BadRequest) return c.json({ error: err.message }, 400);
   console.error(err);
   return c.json({ error: "Server error" }, 500);
 });

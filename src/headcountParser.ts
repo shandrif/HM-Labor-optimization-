@@ -1,4 +1,3 @@
-import * as XLSX from "xlsx";
 import type { RoleKey } from "./calc";
 
 export type ParsedRow = { location: string } & Record<RoleKey | "other", number>;
@@ -38,11 +37,19 @@ const ROLE_MAP: Record<string, RoleKey> = {
  * and counts active employees per Matrix Location and role.
  */
 export async function parseHeadcountFile(file: File): Promise<Parsed> {
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-  const sheetName = wb.SheetNames.find((n) => n.trim().toLowerCase() === "data");
+  // loaded on demand so the Excel parser is not part of the initial download
+  const { default: readXlsxFile, readSheetNames } = await import("read-excel-file");
+  const sheets = await readSheetNames(file);
+  const sheetName = sheets.find((n) => n.trim().toLowerCase() === "data");
   if (!sheetName) throw new Error('Could not find a sheet named "Data" in this file.');
-  const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: null });
-  if (!data.length) throw new Error("The Data sheet is empty.");
+  const grid = await readXlsxFile(file, { sheet: sheetName });
+  if (grid.length < 2) throw new Error("The Data sheet is empty.");
+  const header = grid[0].map((h) => String(h ?? "").trim());
+  const data: Record<string, unknown>[] = grid.slice(1).map((row) => {
+    const o: Record<string, unknown> = {};
+    header.forEach((h, i) => h && (o[h] = row[i] ?? null));
+    return o;
+  });
 
   const cols = Object.keys(data[0]);
   const find = (...names: string[]) => cols.find((c) => names.includes(c.trim().toLowerCase()));
@@ -89,11 +96,16 @@ export async function parseHeadcountFile(file: File): Promise<Parsed> {
 
   // Period label: Summary!B2 "Period: 15 Nov to 21 Nov 2026 · ..." or the file name
   let periodLabel = file.name.replace(/\.xlsx?$/i, "").replace(/[_]+/g, " ").trim();
-  const summary = wb.Sheets[wb.SheetNames.find((n) => n.trim().toLowerCase() === "summary") ?? ""];
-  const b2 = summary?.["B2"]?.v;
-  if (typeof b2 === "string") {
-    const m = b2.match(/Period:\s*([^·|]+)/i);
-    if (m) periodLabel = m[1].trim();
+  const summaryName = sheets.find((n) => n.trim().toLowerCase() === "summary");
+  if (summaryName) {
+    try {
+      const summary = await readXlsxFile(file, { sheet: summaryName });
+      const b2 = summary[1]?.[1];
+      const m = typeof b2 === "string" ? b2.match(/Period:\s*([^·|]+)/i) : null;
+      if (m) periodLabel = m[1].trim();
+    } catch {
+      /* keep file-name label */
+    }
   }
   return { periodLabel, employees, staff, rows: [...byLoc.values()].sort((a, b) => a.location.localeCompare(b.location)) };
 }
