@@ -42,7 +42,6 @@ const CAPPED = BLOBS.length + 1; // blobs + watermark ease to a stop
 export default function Backdrop() {
   const root = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
-  const glow = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = root.current;
@@ -114,10 +113,6 @@ export default function Backdrop() {
         const r = (L.base ?? 0) + (L.spin ? (cur.sy / 1000) * L.spin + cur.mx * 4 : 0);
         nodes[i].style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) rotate(${r.toFixed(2)}deg)`;
       }
-      if (glow.current) {
-        glow.current.style.transform = `translate3d(${cur.px.toFixed(1)}px, ${cur.py.toFixed(1)}px, 0)`;
-        glow.current.style.opacity = (cur.glow * 0.9).toFixed(3);
-      }
       if (grid.current) {
         grid.current.style.setProperty("--gx", `${cur.px.toFixed(0)}px`);
         grid.current.style.setProperty("--gy", `${cur.py.toFixed(0)}px`);
@@ -188,7 +183,6 @@ export default function Backdrop() {
           {l.text}
         </div>
       ))}
-      <div className="glow" ref={glow} />
       <div className="dotgrid" ref={grid} />
       <div className="grain" />
     </div>

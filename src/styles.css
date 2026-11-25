@@ -576,7 +576,6 @@ td.num { white-space: nowrap; }
   --shape-line: rgba(29, 27, 23, 0.18);
   --watermark: rgba(29, 27, 23, 0.07);
   --dot: rgba(29, 27, 23, 0.32);
-  --cursor-glow: rgba(132, 198, 178, 0.55);
   --grain-opacity: 0.22;
 }
 @media (prefers-color-scheme: dark) {
@@ -591,7 +590,6 @@ td.num { white-space: nowrap; }
     --shape-line: rgba(245, 237, 227, 0.16);
     --watermark: rgba(212, 179, 139, 0.08);
     --dot: rgba(212, 179, 139, 0.4);
-    --cursor-glow: rgba(132, 198, 178, 0.22);
     --grain-opacity: 0.12;
   }
 }
@@ -634,12 +632,7 @@ td.num { white-space: nowrap; }
   user-select: none; white-space: nowrap;
 }
 
-/* cursor: teal glow + dot grid spotlight */
-.glow {
-  position: absolute; left: 0; top: 0; width: 520px; height: 520px; margin: -260px 0 0 -260px;
-  border-radius: 50%; background: radial-gradient(closest-side, var(--cursor-glow), transparent);
-  opacity: 0; will-change: transform, opacity;
-}
+/* cursor: dot grid spotlight */
 .dotgrid {
   position: absolute; inset: -40px 0; opacity: 0;
   background-image: radial-gradient(var(--dot) 1.1px, transparent 1.5px);
@@ -663,12 +656,12 @@ td.num { white-space: nowrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   .backdrop > [data-layer] { will-change: auto; }
-  .dotgrid, .glow { display: none; }
+  .dotgrid { display: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
   .backdrop > :not(.grain) { display: none; }
 }
-.backdrop[data-lite] .dotgrid, .backdrop[data-lite] .glow { display: none; }
+.backdrop[data-lite] .dotgrid { display: none; }
 .backdrop[data-lite] > [data-layer] { will-change: auto; }
 td.num { white-space: nowrap; }
 .toolbar .filters .search { flex: 1 1 220px; }
