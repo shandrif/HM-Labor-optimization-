@@ -3,7 +3,8 @@
 Branch labor productivity app for Half Million. Compares **actual** vs **optimum** headcount per branch and
 shows sales productivity per head.
 
-**Live:** https://hm-labor.pages.dev
+**Live:** https://hm-labor.abidihaiderabidi72.workers.dev (Workers — use this one; some company networks block `*.pages.dev`)
+· mirror: https://hm-labor.pages.dev (Pages). Both use the same D1 database and R2 bucket.
 
 ## How it calculates
 
@@ -46,8 +47,10 @@ surplus to short branches per role, same region first.
 
 ## Stack
 
-- Cloudflare **Pages** (React + Vite frontend in `src/`)
-- Cloudflare **Pages Functions** (Hono API in `functions/api/`)
+- React + Vite frontend in `src/`
+- Hono API in `server/app.ts`, served two ways:
+  - Cloudflare **Workers** with static assets: `worker/index.ts`, config `wrangler.worker.jsonc`
+  - Cloudflare **Pages Functions**: `functions/api/[[route]].ts`, config `wrangler.toml`
 - Cloudflare **D1** (`hm-labor-db`, schema in `migrations/`)
 - Cloudflare **R2** (`hm-labor-files`, original headcount uploads)
 
@@ -65,7 +68,8 @@ Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
 ```bash
 npm run db:migrate   # apply new migrations to the remote D1
-npm run deploy       # build + deploy to Pages (production)
+npm run deploy:worker  # build + deploy to Workers (workers.dev) — primary
+npm run deploy         # build + deploy to Pages (pages.dev) — mirror
 ```
 
 ## Data loading
