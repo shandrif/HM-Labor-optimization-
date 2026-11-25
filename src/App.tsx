@@ -100,7 +100,7 @@ function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOu
       <header className="topbar">
         <div className="topbar-inner">
           <a href="#/" className="brand" aria-label="Dashboard">
-            <span className="logo">HM</span>
+            <span className="logo">½M</span>
             <span className="brand-text">Labor Optimization</span>
           </a>
           <Nav items={nav} isActive={isActive} />

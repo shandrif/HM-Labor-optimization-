@@ -26,7 +26,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
         }}
       >
         <div className="brand big">
-          <span className="logo">HM</span>
+          <span className="logo">½M</span>
           <span>Half Million</span>
         </div>
         <h1>Labor Optimization</h1>

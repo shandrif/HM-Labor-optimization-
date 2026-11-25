@@ -16,24 +16,33 @@ type Layer = {
 };
 
 const BLOBS: (Layer & { cls: string })[] = [
-  { cls: "blob b1", depth: 38, scroll: 0.18 },
-  { cls: "blob b2", depth: -46, scroll: 0.32 },
-  { cls: "blob b3", depth: 28, scroll: 0.1 },
-  { cls: "blob b4", depth: -24, scroll: 0.42 },
+  { cls: "blob b1", depth: 40, scroll: 0.18 },
+  { cls: "blob b2", depth: -50, scroll: 0.3 },
+  { cls: "blob b3", depth: 30, scroll: 0.1 },
+  { cls: "blob b4", depth: -26, scroll: 0.4 },
+  { cls: "blob b5", depth: 18, scroll: 0.22 },
 ];
-const SHAPES: (Layer & { cls: string })[] = [
-  { cls: "shape ring r1", depth: 60, scroll: 0.5, spin: 14 },
-  { cls: "shape ring r2", depth: -34, scroll: 0.26, spin: -10 },
-  { cls: "shape square s1", depth: 48, scroll: 0.62, spin: 30, base: 18 },
-  { cls: "shape square s2", depth: -56, scroll: 0.38, spin: -22, base: -12 },
-  { cls: "shape dot d1", depth: 80, scroll: 0.7 },
-  { cls: "shape dot d2", depth: -70, scroll: 0.55 },
+const SHAPES: (Layer & { cls: string; text?: string })[] = [
+  { cls: "half h1", depth: 64, scroll: 0.45, spin: 10, base: -8 },
+  { cls: "half h2", depth: -48, scroll: 0.6, spin: -26, base: 14 },
+  { cls: "half h3", depth: 70, scroll: 0.75, spin: 40, base: 180 },
+  { cls: "bar m1", depth: -36, scroll: 0.52, spin: 18, base: -14 },
+  { cls: "bar m2", depth: 52, scroll: 0.66, spin: -20, base: 22 },
+  { cls: "ring r1", depth: 34, scroll: 0.28, spin: 12 },
+  { cls: "ring r2", depth: -40, scroll: 0.36, spin: -8 },
+  { cls: "dot d1", depth: 90, scroll: 0.8 },
+  { cls: "dot d2", depth: -80, scroll: 0.58 },
+  { cls: "dot d3", depth: 60, scroll: 0.7 },
 ];
-const LAYERS = [...BLOBS, ...SHAPES];
+// watermark is capped like the blobs (index handled below)
+const WATERMARK = { cls: "watermark", depth: -14, scroll: 0.12, text: "½M" };
+const LAYERS: (Layer & { cls: string; text?: string })[] = [...BLOBS, WATERMARK, ...SHAPES];
+const CAPPED = BLOBS.length + 1; // blobs + watermark ease to a stop
 
 export default function Backdrop() {
   const root = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
+  const glow = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = root.current;
@@ -89,7 +98,7 @@ export default function Backdrop() {
         const L = LAYERS[i];
         const x = cur.mx * L.depth;
         let sy = cur.sy * L.scroll;
-        if (i < BLOBS.length) {
+        if (i < CAPPED) {
           // colour fields ease to a stop so they never leave the screen
           const A = vh * 0.35;
           sy = A * Math.tanh(sy / A);
@@ -104,6 +113,10 @@ export default function Backdrop() {
         const y = cur.my * L.depth - sy;
         const r = (L.base ?? 0) + (L.spin ? (cur.sy / 1000) * L.spin + cur.mx * 4 : 0);
         nodes[i].style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) rotate(${r.toFixed(2)}deg)`;
+      }
+      if (glow.current) {
+        glow.current.style.transform = `translate3d(${cur.px.toFixed(1)}px, ${cur.py.toFixed(1)}px, 0)`;
+        glow.current.style.opacity = (cur.glow * 0.9).toFixed(3);
       }
       if (grid.current) {
         grid.current.style.setProperty("--gx", `${cur.px.toFixed(0)}px`);
@@ -171,9 +184,13 @@ export default function Backdrop() {
   return (
     <div className="backdrop" ref={root} aria-hidden="true">
       {LAYERS.map((l, i) => (
-        <div key={i} className={l.cls} data-layer style={{ transform: `rotate(${l.base ?? 0}deg)` }} />
+        <div key={i} className={l.cls} data-layer style={{ transform: `rotate(${l.base ?? 0}deg)` }}>
+          {l.text}
+        </div>
       ))}
+      <div className="glow" ref={glow} />
       <div className="dotgrid" ref={grid} />
+      <div className="grain" />
     </div>
   );
 }
