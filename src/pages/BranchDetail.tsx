@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type User } from "../api";
-import { fmt, fmtPct, fmtSar, fmtSigned, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey } from "../calc";
+import { fmt, fmtPct, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey } from "../calc";
+import { ActionForm, ActionList } from "./Actions";
 
 type Counts = Record<RoleKey, number>;
 
@@ -11,6 +12,9 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
   const [edit, setEdit] = useState<Counts | null>(null);
   const [reason, setReason] = useState("");
   const [info, setInfo] = useState<any>(null);
+  const [newAction, setNewAction] = useState(false);
+  const [names, setNames] = useState<Map<string, string>>(new Map());
+  const [branchList, setBranchList] = useState<any[]>([]);
   const isAdmin = user.role === "admin";
   const canEdit = user.role !== "viewer";
 
@@ -18,6 +22,12 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
   useEffect(() => {
     load();
   }, [code]);
+  useEffect(() => {
+    api("/dashboard").then((r) => {
+      setBranchList(r.branches);
+      setNames(new Map(r.branches.map((b: any) => [b.code, b.name])));
+    });
+  }, []);
 
   if (error) return <div className="error">{error}</div>;
   if (!d) return <div className="muted">Loading…</div>;
@@ -31,6 +41,9 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
   const prod = (hc: number | null) => (hc && b.ads ? b.ads / hc : null);
   const aProd = prod(aTot), oProd = prod(oTot), eProd = prod(eTot);
   const change = (p: number | null) => (aProd && p ? p / aProd - 1 : null);
+  const delta = planDeltas(d.actions.filter((a: any) => a.status === "approved")).get(code);
+  const proj = act && delta ? (Object.fromEntries(ROLES.map((r) => [r, act[r] + delta[r]])) as Counts) : null;
+  const pTot = sum(proj);
 
   const save = async () => {
     setMsg("");
@@ -207,6 +220,42 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                 })}
                 <td className="num b">{oTot != null && aTot != null ? fmtSigned(oTot - aTot) : "—"}</td>
               </tr>
+              {proj && (
+                <>
+                  <tr>
+                    <td>
+                      Planned actions <span className="muted small">(approved)</span>
+                    </td>
+                    {ROLES.map((r) => (
+                      <td key={r} className="num">
+                        {delta![r] ? fmtSigned(delta![r]) : "0"}
+                      </td>
+                    ))}
+                    <td className="num b">{fmtSigned(pTot! - aTot!)}</td>
+                  </tr>
+                  <tr>
+                    <td>Projected</td>
+                    {ROLES.map((r) => (
+                      <td key={r} className="num">
+                        {proj[r]}
+                      </td>
+                    ))}
+                    <td className="num b">{pTot}</td>
+                  </tr>
+                  <tr>
+                    <td>Gap after actions</td>
+                    {ROLES.map((r) => {
+                      const g = opt ? opt[r] - proj[r] : null;
+                      return (
+                        <td key={r} className={`num b ${g && g > 0 ? "short" : g && g < 0 ? "over" : "ok"}`}>
+                          {g == null ? "—" : fmtSigned(g)}
+                        </td>
+                      );
+                    })}
+                    <td className="num b">{oTot != null ? fmtSigned(oTot - pTot!) : "—"}</td>
+                  </tr>
+                </>
+              )}
               {edit && (
                 <tr className="editrow">
                   <td>New optimum</td>
@@ -256,6 +305,33 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
             Optimum last set by {(opt as any).updated_by_name} on {(opt as any).updated_at?.slice(0, 10)}
           </p>
         )}
+      </section>
+
+      <section className="card">
+        <div className="cardhead">
+          <h2>Transfers, promotions & hires</h2>
+          {canEdit && !newAction && (
+            <button className="ghost" onClick={() => setNewAction(true)}>
+              New action
+            </button>
+          )}
+        </div>
+        {newAction && (
+          <div className="editbox" style={{ borderTop: 0, marginTop: 0, paddingTop: 0 }}>
+            <ActionForm
+              branches={branchList}
+              user={user}
+              initial={{ from_branch: code, to_branch: "" }}
+              onSaved={(m) => {
+                setMsg(m);
+                setNewAction(false);
+                load();
+              }}
+              onCancel={() => setNewAction(false)}
+            />
+          </div>
+        )}
+        <ActionList list={d.actions} user={user} names={names} onChange={load} />
       </section>
 
       <div className="two">

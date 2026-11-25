@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type User } from "../api";
-import { compute, fmt, fmtPct, fmtSar, fmtSigned, ROLES, ROLE_SHORT, totals, type BranchRow, type Computed } from "../calc";
+import { compute, planDeltas, fmt, fmtPct, fmtSar, fmtSigned, ROLES, ROLE_SHORT, totals, type BranchRow, type Computed } from "../calc";
 import * as XLSX from "xlsx";
 
-type SortKey = "code" | "name" | "region" | "ads" | "actual" | "optimum" | "gap" | "actProd" | "optProd" | "change";
+type SortKey = "code" | "name" | "region" | "ads" | "actual" | "optimum" | "gap" | "projGap" | "actProd" | "optProd" | "change";
 
 export default function Dashboard({ user }: { user: User }) {
-  const [data, setData] = useState<{ upload: any; branches: BranchRow[] } | null>(null);
+  const [data, setData] = useState<{ upload: any; branches: BranchRow[]; actions: any[] } | null>(null);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
   const [region, setRegion] = useState("");
@@ -21,7 +21,10 @@ export default function Dashboard({ user }: { user: User }) {
     api("/dashboard").then(setData).catch((e) => setError(e.message));
   }, []);
 
-  const all = useMemo(() => (data?.branches ?? []).map(compute), [data]);
+  const all = useMemo(() => {
+    const d = planDeltas(data?.actions ?? []);
+    return (data?.branches ?? []).map((b) => compute(b, d.get(b.code)));
+  }, [data]);
   const opts = (k: keyof BranchRow) => [...new Set(all.map((b) => b[k]).filter(Boolean) as string[])].sort();
 
   const rows = useMemo(() => {
@@ -38,6 +41,7 @@ export default function Dashboard({ user }: { user: User }) {
           (status === "over" && b.hasActual && b.gap < 0) ||
           (status === "under" && b.hasActual && b.gap > 0) ||
           (status === "ok" && b.hasActual && b.gap === 0) ||
+          (status === "open" && b.hasActual && b.hasOptimum && b.projGap !== 0) ||
           (status === "nodata" && (!b.hasActual || !b.hasOptimum || !b.ads)) ||
           (status === "pending" && b.pending > 0)),
     );
@@ -82,6 +86,8 @@ export default function Dashboard({ user }: { user: User }) {
       ...Object.fromEntries(ROLES.map((r) => [`Optimum ${ROLE_SHORT[r]}`, b[`opt_${r}`] ?? ""])),
       "Optimum HC": b.hasOptimum ? b.optimum : "",
       "Net Req": b.hasActual && b.hasOptimum ? b.gap : "",
+      "Planned actions": b.planned,
+      "Gap after actions": b.hasActual && b.hasOptimum ? b.projGap : "",
       "Actual Prod/Head": b.actProd ? Math.round(b.actProd) : "",
       "Optimum Prod/Head": b.optProd ? Math.round(b.optProd) : "",
       "Change %": b.change != null ? Math.round(b.change * 1000) / 10 : "",
@@ -183,10 +189,32 @@ export default function Dashboard({ user }: { user: User }) {
               })}
               <td className={`num b ${t.gap > 0 ? "short" : t.gap < 0 ? "over" : ""}`}>{fmtSigned(t.gap)}</td>
             </tr>
+            <tr>
+              <td>Planned actions</td>
+              {ROLES.map((r) => (
+                <td key={r} className="num">
+                  {t.byRole[r].planned ? fmtSigned(t.byRole[r].planned) : "0"}
+                </td>
+              ))}
+              <td className="num b">{t.planned ? fmtSigned(t.planned) : "0"}</td>
+            </tr>
+            <tr>
+              <td>Gap after actions</td>
+              {ROLES.map((r) => {
+                const g = t.byRole[r].optimum - t.byRole[r].actual - t.byRole[r].planned;
+                return (
+                  <td key={r} className={`num b ${g > 0 ? "short" : g < 0 ? "over" : "ok"}`}>
+                    {fmtSigned(g)}
+                  </td>
+                );
+              })}
+              <td className={`num b ${t.projGap > 0 ? "short" : t.projGap < 0 ? "over" : "ok"}`}>{fmtSigned(t.projGap)}</td>
+            </tr>
           </tbody>
         </table>
         </div>
-        <p className="muted small">Net requirement = Optimum − Actual. Positive: staff needed. Negative: surplus.</p>
+        <p className="muted small">Net requirement = Optimum − Actual. Positive: staff needed. Negative: surplus. Planned actions = approved
+          transfers, promotions and hires not yet marked completed.</p>
       </section>
 
       <section className="card">
@@ -202,6 +230,7 @@ export default function Dashboard({ user }: { user: User }) {
             <option value="over">Over-staffed</option>
             <option value="under">Under-staffed</option>
             <option value="ok">On optimum</option>
+            <option value="open">Gap left after actions</option>
             <option value="pending">Pending request</option>
             <option value="nodata">Missing data</option>
           </select>
@@ -218,6 +247,7 @@ export default function Dashboard({ user }: { user: User }) {
                 {th("actual", "Actual HC", "num")}
                 {th("optimum", "Optimum HC", "num")}
                 {th("gap", "Net req", "num")}
+                {th("projGap", "After actions", "num")}
                 {th("actProd", "Actual prod/head", "num")}
                 {th("optProd", "Optimum prod/head", "num")}
                 {th("change", "Change", "num")}
@@ -229,7 +259,7 @@ export default function Dashboard({ user }: { user: User }) {
               ))}
               {!rows.length && (
                 <tr>
-                  <td colSpan={11} className="muted center-text">
+                  <td colSpan={12} className="muted center-text">
                     No branches match these filters.
                   </td>
                 </tr>
@@ -261,6 +291,9 @@ function Row({ b }: { b: Computed }) {
       <td className="num">{b.hasOptimum ? b.optimum : "—"}</td>
       <td className={`num b ${b.gap > 0 ? "short" : b.gap < 0 ? "over" : ""}`}>
         {b.hasActual && b.hasOptimum ? fmtSigned(b.gap) : "—"}
+      </td>
+      <td className={`num ${b.projGap > 0 ? "short" : b.projGap < 0 ? "over" : "ok"}`} title={b.planned ? `Planned ${fmtSigned(b.planned)}` : ""}>
+        {b.hasActual && b.hasOptimum ? (b.projGap === 0 ? "✓ 0" : fmtSigned(b.projGap)) : "—"}
       </td>
       <td className="num">{fmtSar(b.actProd)}</td>
       <td className="num">{fmtSar(b.optProd)}</td>

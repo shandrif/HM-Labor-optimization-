@@ -172,7 +172,10 @@ app.get("/dashboard", async (c) => {
     )
     .bind(uploadId ?? -1)
     .all();
-  return c.json({ upload, branches: results });
+  const { results: actions } = await db
+    .prepare("SELECT id, type, from_branch, from_role, to_branch, to_role, qty FROM actions WHERE status = 'approved'")
+    .all();
+  return c.json({ upload, branches: results, actions });
 });
 
 app.get("/branches/:code", async (c) => {
@@ -202,7 +205,15 @@ app.get("/branches/:code", async (c) => {
     )
     .bind(code)
     .all();
-  return c.json({ branch, optimum, history, requests });
+  const { results: actions } = await db
+    .prepare(
+      `SELECT a.*, ru.name AS requested_by_name, rv.name AS reviewed_by_name FROM actions a
+       JOIN users ru ON ru.id = a.requested_by LEFT JOIN users rv ON rv.id = a.reviewed_by
+       WHERE a.from_branch = ? OR a.to_branch = ? ORDER BY a.id DESC LIMIT 50`,
+    )
+    .bind(code, code)
+    .all();
+  return c.json({ branch, optimum, history, requests, actions });
 });
 
 // Admin can edit branch master data (ADS, ATC, hours, tier, type, etc.)
@@ -433,6 +444,114 @@ app.delete("/uploads/:id", adminOnly, async (c) => {
     c.env.DB.prepare("DELETE FROM headcount_uploads WHERE id = ?").bind(id),
   ]);
   await audit(c.env.DB, c.get("user").id, "headcount_delete", { id });
+  return c.json({ ok: true });
+});
+
+// ---------- staffing actions: transfers, promotions, hires ----------
+const ACTION_TYPES = ["transfer", "promote", "hire"] as const;
+const isRole = (r: unknown): r is (typeof ROLES)[number] => typeof r === "string" && (ROLES as readonly string[]).includes(r);
+
+app.get("/actions", async (c) => {
+  const status = c.req.query("status") ?? "open";
+  const branch = c.req.query("branch") ?? "";
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
+       ru.name AS requested_by_name, rv.name AS reviewed_by_name
+     FROM actions a
+     LEFT JOIN branches fb ON fb.code = a.from_branch
+     JOIN branches tb ON tb.code = a.to_branch
+     JOIN users ru ON ru.id = a.requested_by LEFT JOIN users rv ON rv.id = a.reviewed_by
+     WHERE (? = 'all' OR (? = 'open' AND a.status IN ('pending','approved')) OR a.status = ?)
+       AND (? = '' OR a.from_branch = ? OR a.to_branch = ?)
+     ORDER BY CASE a.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, a.id DESC LIMIT 500`,
+  )
+    .bind(status, status, status, branch, branch, branch)
+    .all();
+  return c.json({ actions: results });
+});
+
+app.post("/actions", requireRole("admin", "manager"), async (c) => {
+  const db = c.env.DB;
+  const b = await c.req.json<any>();
+  const user = c.get("user");
+  const type = b.type;
+  if (!ACTION_TYPES.includes(type)) return c.json({ error: "Invalid action type" }, 400);
+  const qty = Number(b.qty);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 100) return c.json({ error: "Number of staff must be 1–100" }, 400);
+
+  let fromBranch: string | null = null, fromRole: string | null = null, toBranch: string, toRole: string;
+  if (type === "hire") {
+    toBranch = b.to_branch; toRole = b.to_role;
+  } else if (type === "transfer") {
+    fromBranch = b.from_branch; toBranch = b.to_branch; fromRole = toRole = b.from_role ?? b.to_role;
+    if (fromBranch === toBranch) return c.json({ error: "From and To branch must be different" }, 400);
+  } else {
+    fromBranch = b.from_branch; fromRole = b.from_role; toRole = b.to_role;
+    toBranch = b.to_branch || b.from_branch;
+    if (fromRole === toRole && fromBranch === toBranch) return c.json({ error: "Choose a different role or branch" }, 400);
+  }
+  if (!isRole(toRole) || (fromRole !== null && !isRole(fromRole))) return c.json({ error: "Invalid role" }, 400);
+  const codes = [toBranch, fromBranch].filter(Boolean) as string[];
+  for (const code of codes) {
+    if (!(await db.prepare("SELECT 1 FROM branches WHERE code = ?").bind(code).first()))
+      return c.json({ error: `Unknown branch ${code}` }, 400);
+  }
+  const date = String(b.effective_date ?? "").trim();
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "Invalid effective date" }, 400);
+  const isAdmin = user.role === "admin";
+  if (!isAdmin && !String(b.reason ?? "").trim()) return c.json({ error: "Please give a reason" }, 400);
+
+  const row = await db
+    .prepare(
+      `INSERT INTO actions (type, from_branch, from_role, to_branch, to_role, qty, employee, effective_date, reason,
+         status, requested_by, reviewed_by, reviewed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isAdmin ? "datetime('now')" : "NULL"}) RETURNING id`,
+    )
+    .bind(
+      type, fromBranch, fromRole, toBranch, toRole, qty,
+      String(b.employee ?? "").trim().slice(0, 200) || null,
+      date || null,
+      String(b.reason ?? "").trim().slice(0, 1000) || null,
+      isAdmin ? "approved" : "pending",
+      user.id,
+      isAdmin ? user.id : null,
+    )
+    .first<{ id: number }>();
+  await audit(db, user.id, "action_create", { id: row?.id, type, fromBranch, toBranch, fromRole, toRole, qty });
+  return c.json({ ok: true, id: row?.id, approved: isAdmin });
+});
+
+const TRANSITIONS: Record<string, { from: string[]; to: string; admin: boolean }> = {
+  approve: { from: ["pending"], to: "approved", admin: true },
+  reject: { from: ["pending"], to: "rejected", admin: true },
+  complete: { from: ["approved"], to: "completed", admin: true },
+  cancel: { from: ["pending", "approved"], to: "cancelled", admin: false },
+};
+
+app.post("/actions/:id/:op{approve|reject|complete|cancel}", requireRole("admin", "manager"), async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param("id"));
+  const op = c.req.param("op");
+  const t = TRANSITIONS[op];
+  const user = c.get("user");
+  const a = await db.prepare("SELECT * FROM actions WHERE id = ?").bind(id).first<any>();
+  if (!a) return c.json({ error: "Action not found" }, 404);
+  if (t.admin && user.role !== "admin") return c.json({ error: "Only Admin can do this" }, 403);
+  // managers may only cancel their own pending requests
+  if (op === "cancel" && user.role !== "admin" && (a.requested_by !== user.id || a.status !== "pending"))
+    return c.json({ error: "You can only cancel your own pending requests" }, 403);
+  if (!t.from.includes(a.status)) return c.json({ error: `Cannot ${op} an action that is ${a.status}` }, 409);
+  const { note } = await c.req.json<{ note?: string }>().catch(() => ({ note: "" }));
+  await db
+    .prepare(
+      `UPDATE actions SET status = ?, reviewed_by = COALESCE(?, reviewed_by), review_note = COALESCE(NULLIF(?, ''), review_note),
+         reviewed_at = CASE WHEN ? IN ('approve','reject') THEN datetime('now') ELSE reviewed_at END,
+         completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
+       WHERE id = ?`,
+    )
+    .bind(t.to, op === "approve" || op === "reject" ? user.id : null, String(note ?? "").slice(0, 1000), op, op, id)
+    .run();
+  await audit(db, user.id, `action_${op}`, { id });
   return c.json({ ok: true });
 });
 

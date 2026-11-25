@@ -6,6 +6,7 @@ import BranchDetail from "./pages/BranchDetail";
 import Approvals from "./pages/Approvals";
 import Uploads from "./pages/Uploads";
 import Users from "./pages/Users";
+import Actions from "./pages/Actions";
 import Account from "./pages/Account";
 
 function useHashRoute() {
@@ -37,7 +38,8 @@ export default function App() {
   const isAdmin = user.role === "admin";
   const nav = [
     { href: "/", label: "Dashboard" },
-    { href: "/approvals", label: isAdmin ? "Approvals" : "Requests" },
+    { href: "/actions", label: "Actions" },
+    { href: "/approvals", label: isAdmin ? "Optimum approvals" : "Optimum requests" },
     { href: "/uploads", label: "Headcount" },
     ...(isAdmin ? [{ href: "/users", label: "Users" }] : []),
   ];
@@ -45,6 +47,7 @@ export default function App() {
 
   let page;
   if (route.startsWith("/branch/")) page = <BranchDetail code={decodeURIComponent(route.slice(8))} user={user} />;
+  else if (route.startsWith("/actions")) page = <Actions user={user} />;
   else if (route.startsWith("/approvals")) page = <Approvals user={user} />;
   else if (route.startsWith("/uploads")) page = <Uploads user={user} />;
   else if (route.startsWith("/users") && isAdmin) page = <Users user={user} />;

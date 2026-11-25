@@ -127,7 +127,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color:
 label input, label select, label textarea { font-size: 14px; }
 label.check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
 .formgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; margin-top: 12px; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.filters label.check { margin: 0; }
 .filters input { flex: 1; min-width: 200px; }
 
 button, .btn {
@@ -161,4 +162,19 @@ html, body { overflow-x: hidden; }
   .filters select, .filters input { flex: 1 1 100%; min-width: 0; }
   .who { width: 100%; justify-content: space-between; }
   .pagehead { flex-direction: column; }
+}
+.ok { color: var(--ok); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 4px; }
+.seg button { border: 0; border-radius: 0; background: var(--surface); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.pill.completed { background: var(--ok-bg); color: var(--ok); }
+.pill.cancelled { background: var(--surface-2); color: var(--muted); }
+.pill.type-transfer, .pill.type-promote, .pill.type-hire { margin-left: 0; text-transform: none; }
+.pill.type-transfer { background: #e8eefc; color: #2f4fa8; }
+.pill.type-promote { background: #f1e8fb; color: #6b3fa0; }
+.pill.type-hire { background: var(--ok-bg); color: var(--ok); }
+@media (prefers-color-scheme: dark) {
+  .pill.type-transfer { background: #1d2a4a; color: #9db4f5; }
+  .pill.type-promote { background: #2d1f40; color: #c9a8f0; }
 }

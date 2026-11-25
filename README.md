@@ -19,12 +19,29 @@ shows sales productivity per head.
 - **Actual headcount** comes from the latest weekly Headcount upload (Excel with a `Data` sheet, one row per employee).
 - **Optimum headcount** is entered manually. Managers request changes; only Admin approves.
 
+## Staffing actions
+
+Transfers, promotions/moves and hires (the "Actions" block of the YR26 sheet).
+
+| Type | Effect on headcount |
+|---|---|
+| Transfer | −n role at From branch, +n same role at To branch |
+| Promote / Move | −n old role at branch, +n new role at same (or another) branch |
+| Hire | +n role at branch |
+
+Status flow: `pending` → `approved` / `rejected`; `approved` → `completed` / `cancelled`. Managers propose (with a reason),
+only Admin approves; Admin-created actions are approved immediately.
+**Projected headcount** = Actual + approved actions. Admin marks an action *completed* once it appears in a
+headcount upload, which removes it from the projection so it is not counted twice. "Gap after actions" =
+Optimum − Projected (replaces the sheet's Validation columns). The Actions page also suggests transfers from
+surplus to short branches per role, same region first.
+
 ## Roles
 
 | Role | Can |
 |---|---|
 | admin | Everything: approve optimum changes, edit optimum directly, upload headcount, edit branches, manage users |
-| manager | View everything, request optimum changes |
+| manager | View everything, request optimum changes and staffing actions |
 | viewer | View only |
 
 ## Stack
