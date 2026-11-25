@@ -345,12 +345,27 @@ app.get("/location-map", adminOnly, async (c) => {
 });
 
 type UploadRow = { location: string } & Counts & { other: number };
+type StaffRow = {
+  emp_no: string;
+  name: string;
+  title: string | null;
+  role: string;
+  location: string;
+  joining_date: string | null;
+  company: string | null;
+};
 
 app.post("/uploads", adminOnly, async (c) => {
   const db = c.env.DB;
   const form = await c.req.formData();
   const file = form.get("file") as File | null;
-  let payload: { period_label: string; employees: number; rows: UploadRow[]; mappings: Record<string, string | null> };
+  let payload: {
+    period_label: string;
+    employees: number;
+    rows: UploadRow[];
+    mappings: Record<string, string | null>;
+    staff?: StaffRow[];
+  };
   try {
     payload = JSON.parse(String(form.get("payload")));
   } catch {
@@ -414,8 +429,40 @@ app.post("/uploads", adminOnly, async (c) => {
         .bind(loc, code),
     );
   }
+  // staff roster: multi-row inserts (D1 allows up to 100 bound params per statement)
+  const staff = Array.isArray(payload.staff) ? payload.staff.slice(0, 20000) : [];
+  const COLS = 9, PER = Math.floor(100 / COLS);
+  const str = (v: unknown, n: number) => (v == null || v === "" ? null : String(v).slice(0, n));
+  for (let i = 0; i < staff.length; i += PER) {
+    const chunk = staff.slice(i, i + PER).filter((e) => e && e.emp_no && e.name);
+    if (!chunk.length) continue;
+    const params: unknown[] = [];
+    for (const e of chunk) {
+      const role = (ROLES as readonly string[]).includes(e.role) ? e.role : "other";
+      params.push(
+        uploadId,
+        str(e.emp_no, 40),
+        str(e.name, 200),
+        str(e.title, 120),
+        role,
+        mappings[e.location] ?? null,
+        str(e.location, 200),
+        /^\d{4}-\d{2}-\d{2}$/.test(String(e.joining_date)) ? e.joining_date : null,
+        str(e.company, 120),
+      );
+    }
+    stmts.push(
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO employees (upload_id, emp_no, name, title, role, branch_code, location, joining_date, company) VALUES ${chunk
+            .map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .join(", ")}`,
+        )
+        .bind(...params),
+    );
+  }
   await db.batch(stmts);
-  await audit(db, c.get("user").id, "headcount_upload", { uploadId, label, branches: agg.size });
+  await audit(db, c.get("user").id, "headcount_upload", { uploadId, label, branches: agg.size, staff: staff.length });
   return c.json({ ok: true, id: uploadId, branches: agg.size });
 });
 
@@ -441,6 +488,7 @@ app.delete("/uploads/:id", adminOnly, async (c) => {
   if (row.file_key) await c.env.FILES.delete(row.file_key);
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM headcount WHERE upload_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM employees WHERE upload_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM headcount_uploads WHERE id = ?").bind(id),
   ]);
   await audit(c.env.DB, c.get("user").id, "headcount_delete", { id });
@@ -503,13 +551,16 @@ app.post("/actions", requireRole("admin", "manager"), async (c) => {
 
   const row = await db
     .prepare(
-      `INSERT INTO actions (type, from_branch, from_role, to_branch, to_role, qty, employee, effective_date, reason,
+      `INSERT INTO actions (type, from_branch, from_role, to_branch, to_role, qty, employee, employee_nos, effective_date, reason,
          status, requested_by, reviewed_by, reviewed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isAdmin ? "datetime('now')" : "NULL"}) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isAdmin ? "datetime('now')" : "NULL"}) RETURNING id`,
     )
     .bind(
       type, fromBranch, fromRole, toBranch, toRole, qty,
-      String(b.employee ?? "").trim().slice(0, 200) || null,
+      String(b.employee ?? "").trim().slice(0, 1000) || null,
+      Array.isArray(b.employee_nos)
+        ? b.employee_nos.map((x: unknown) => String(x).trim().slice(0, 40)).filter(Boolean).slice(0, 100).join(",") || null
+        : null,
       date || null,
       String(b.reason ?? "").trim().slice(0, 1000) || null,
       isAdmin ? "approved" : "pending",
@@ -553,6 +604,37 @@ app.post("/actions/:id/:op{approve|reject|complete|cancel}", requireRole("admin"
     .run();
   await audit(db, user.id, `action_${op}`, { id });
   return c.json({ ok: true });
+});
+
+// ---------- staff roster (admin + manager only) ----------
+app.get("/employees", requireRole("admin", "manager"), async (c) => {
+  const db = c.env.DB;
+  const branch = c.req.query("branch") ?? "";
+  const role = c.req.query("role") ?? "";
+  const q = (c.req.query("q") ?? "").trim();
+  const latest = await db
+    .prepare("SELECT u.id, u.period_label FROM headcount_uploads u WHERE EXISTS (SELECT 1 FROM employees e WHERE e.upload_id = u.id) ORDER BY u.id DESC LIMIT 1")
+    .first<{ id: number; period_label: string }>();
+  if (!latest) return c.json({ employees: [], source: null });
+  const { results } = await db
+    .prepare(
+      `SELECT emp_no, name, title, role, branch_code, joining_date, company FROM employees
+       WHERE upload_id = ? AND (? = '' OR branch_code = ?) AND (? = '' OR role = ?)
+         AND (? = '' OR name LIKE ? OR emp_no LIKE ?)
+       ORDER BY name LIMIT 200`,
+    )
+    .bind(latest.id, branch, branch, role, role, q, `%${q}%`, `%${q}%`)
+    .all<any>();
+  // flag staff already named in an open action
+  const { results: open } = await db
+    .prepare("SELECT id, type, status, employee_nos FROM actions WHERE status IN ('pending','approved') AND employee_nos IS NOT NULL")
+    .all<any>();
+  const busy = new Map<string, { id: number; type: string; status: string }>();
+  for (const a of open) for (const n of String(a.employee_nos).split(",")) if (n) busy.set(n.trim(), a);
+  return c.json({
+    source: latest.period_label,
+    employees: results.map((e) => ({ ...e, in_action: busy.get(e.emp_no) ?? null })),
+  });
 });
 
 // ---------- users (admin only) ----------

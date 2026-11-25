@@ -87,7 +87,10 @@ export default function Uploads({ user }: { user: User }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("payload", JSON.stringify({ period_label: label, employees: parsed.employees, rows: parsed.rows, mappings: map }));
+      fd.append(
+        "payload",
+        JSON.stringify({ period_label: label, employees: parsed.employees, rows: parsed.rows, mappings: map, staff: parsed.staff }),
+      );
       const r = await api("/uploads", { method: "POST", body: fd });
       toast(`Headcount saved — ${r.branches} branches updated`);
       setParsed(null);

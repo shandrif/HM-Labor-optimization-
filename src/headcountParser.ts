@@ -2,7 +2,28 @@ import * as XLSX from "xlsx";
 import type { RoleKey } from "./calc";
 
 export type ParsedRow = { location: string } & Record<RoleKey | "other", number>;
-export type Parsed = { periodLabel: string; employees: number; rows: ParsedRow[] };
+export type Staff = {
+  emp_no: string;
+  name: string;
+  title: string | null;
+  role: RoleKey | "other";
+  location: string;
+  joining_date: string | null;
+  company: string | null;
+};
+export type Parsed = { periodLabel: string; employees: number; rows: ParsedRow[]; staff: Staff[] };
+
+function toIsoDate(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  if (v instanceof Date && !isNaN(+v)) return v.toISOString().slice(0, 10);
+  if (typeof v === "number") {
+    // Excel serial date
+    const d = new Date(Math.round((v - 25569) * 864e5));
+    return isNaN(+d) ? null : d.toISOString().slice(0, 10);
+  }
+  const d = new Date(String(v));
+  return isNaN(+d) ? null : d.toISOString().slice(0, 10);
+}
 
 const ROLE_MAP: Record<string, RoleKey> = {
   "store manager": "sm",
@@ -17,7 +38,7 @@ const ROLE_MAP: Record<string, RoleKey> = {
  * and counts active employees per Matrix Location and role.
  */
 export async function parseHeadcountFile(file: File): Promise<Parsed> {
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
   const sheetName = wb.SheetNames.find((n) => n.trim().toLowerCase() === "data");
   if (!sheetName) throw new Error('Could not find a sheet named "Data" in this file.');
   const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: null });
@@ -32,6 +53,12 @@ export async function parseHeadcountFile(file: File): Promise<Parsed> {
   if (!locCol) throw new Error('Missing "Matrix Location" column in the Data sheet.');
   if (!roleCol && !titleCol) throw new Error('Missing "Role Group" or "Title" column in the Data sheet.');
 
+  const empCol = find("emp no", "employee no", "emp no.", "employee number");
+  const nameCol = find("employee full name", "employee name", "name", "full name");
+  const joinCol = find("joining date", "date of joining", "join date");
+  const companyCol = find("company");
+  const staff: Staff[] = [];
+  const seen = new Set<string>();
   const byLoc = new Map<string, ParsedRow>();
   let employees = 0;
   for (const r of data) {
@@ -43,6 +70,20 @@ export async function parseHeadcountFile(file: File): Promise<Parsed> {
     const role = ROLE_MAP[roleText] ?? "other";
     const row = byLoc.get(loc) ?? { location: loc, sm: 0, tl: 0, ba: 0, ca: 0, cl: 0, other: 0 };
     row[role]++;
+    const empNo = empCol ? String(r[empCol] ?? "").trim() : "";
+    const name = nameCol ? String(r[nameCol] ?? "").replace(/\s+/g, " ").trim() : "";
+    if (empNo && name && !seen.has(empNo)) {
+      seen.add(empNo);
+      staff.push({
+        emp_no: empNo,
+        name,
+        title: titleCol && r[titleCol] ? String(r[titleCol]).trim() : null,
+        role,
+        location: loc,
+        joining_date: joinCol ? toIsoDate(r[joinCol]) : null,
+        company: companyCol && r[companyCol] ? String(r[companyCol]).trim() : null,
+      });
+    }
     byLoc.set(loc, row);
   }
 
@@ -54,7 +95,7 @@ export async function parseHeadcountFile(file: File): Promise<Parsed> {
     const m = b2.match(/Period:\s*([^·|]+)/i);
     if (m) periodLabel = m[1].trim();
   }
-  return { periodLabel, employees, rows: [...byLoc.values()].sort((a, b) => a.location.localeCompare(b.location)) };
+  return { periodLabel, employees, staff, rows: [...byLoc.values()].sort((a, b) => a.location.localeCompare(b.location)) };
 }
 
 // ---------- location → branch matching ----------

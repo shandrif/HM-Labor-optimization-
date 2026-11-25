@@ -47,6 +47,121 @@ export function describeAction(a: any, names?: Map<string, string>) {
     : `Move ${a.qty} × ${r(a.from_role)} at ${n(a.from_branch)} → ${r(a.to_role)} at ${n(a.to_branch)}`;
 }
 
+type Staff = {
+  emp_no: string;
+  name: string;
+  title: string | null;
+  role: string;
+  branch_code: string | null;
+  joining_date: string | null;
+  company: string | null;
+  in_action: { id: number; type: string; status: string } | null;
+};
+
+function tenure(d: string | null) {
+  if (!d) return null;
+  const start = new Date(d);
+  if (isNaN(+start)) return null;
+  const months = Math.max(0, Math.floor((Date.now() - +start) / (30.44 * 864e5)));
+  const y = Math.floor(months / 12), m = months % 12;
+  return y ? `${y}y ${m}m` : `${m}m`;
+}
+
+/** Suggests staff at a branch in a role (from the latest headcount upload). */
+function StaffPicker({
+  branch,
+  role,
+  picked,
+  onChange,
+}: {
+  branch: string;
+  role: RoleKey;
+  picked: Staff[];
+  onChange: (s: Staff[]) => void;
+}) {
+  const [list, setList] = useState<Staff[] | null>(null);
+  const [source, setSource] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!branch) return setList(null);
+    let live = true;
+    setList(null);
+    setErr("");
+    api(`/employees?branch=${encodeURIComponent(branch)}&role=${role}`)
+      .then((r) => {
+        if (!live) return;
+        setList(r.employees);
+        setSource(r.source);
+      })
+      .catch((e) => live && setErr(e.message));
+    return () => {
+      live = false;
+    };
+  }, [branch, role]);
+
+  const toggle = (e: Staff) =>
+    onChange(picked.some((p) => p.emp_no === e.emp_no) ? picked.filter((p) => p.emp_no !== e.emp_no) : [...picked, e]);
+
+  if (!branch) return <div className="staffpick empty">Choose a branch to see its {ROLE_LABEL[role].toLowerCase()}s.</div>;
+  if (err) return <div className="staffpick empty">{err}</div>;
+  if (!list) return <div className="staffpick empty">Loading staff…</div>;
+  if (!source)
+    return (
+      <div className="staffpick empty">
+        No staff list yet — upload the weekly headcount file to get name suggestions.
+      </div>
+    );
+
+  const ql = q.trim().toLowerCase();
+  const shown = list.filter((e) => !ql || `${e.name} ${e.emp_no}`.toLowerCase().includes(ql));
+  return (
+    <div className="staffpick">
+      <div className="staffpick-head">
+        <span>
+          {list.length} {ROLE_LABEL[role].toLowerCase()}
+          {list.length === 1 ? "" : "s"} at {branch} <span className="muted">· from {source}</span>
+        </span>
+        {list.length > 6 && (
+          <input className="sp-search" placeholder="Filter by name or no." value={q} onChange={(e) => setQ(e.target.value)} />
+        )}
+      </div>
+      <ul>
+        {shown.map((e) => {
+          const on = picked.some((p) => p.emp_no === e.emp_no);
+          const blocked = !!e.in_action && !on;
+          const t = tenure(e.joining_date);
+          return (
+            <li key={e.emp_no}>
+              <button
+                type="button"
+                className={`sp-row ${on ? "on" : ""}`}
+                disabled={blocked}
+                onClick={() => toggle(e)}
+                title={blocked ? `Already in ${e.in_action!.status} action #${e.in_action!.id}` : ""}
+              >
+                <span className="sp-check">{on && <Icon name="check" />}</span>
+                <span className="sp-main">
+                  <span className="sp-name">{e.name}</span>
+                  <span className="sp-meta">
+                    #{e.emp_no}
+                    {e.title ? ` · ${e.title}` : ""}
+                    {t ? ` · ${t} tenure` : ""}
+                    {e.company && e.company !== "Half Million" ? ` · ${e.company}` : ""}
+                  </span>
+                </span>
+                {e.in_action && <span className="pill warn">In {e.in_action.status} action</span>}
+              </button>
+            </li>
+          );
+        })}
+        {!shown.length && <li className="muted sp-none">No {ROLE_LABEL[role].toLowerCase()} found at this branch.</li>}
+      </ul>
+    </div>
+  );
+}
+
 export function ActionForm({
   branches,
   user,
@@ -63,9 +178,18 @@ export function ActionForm({
   const [f, setF] = useState<ActionDraft>({ ...EMPTY, ...initial });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState<Staff[]>([]);
   const isAdmin = user.role === "admin";
 
-  const set = (patch: Partial<ActionDraft>) => setF((x) => ({ ...x, ...patch }));
+  const set = (patch: Partial<ActionDraft>) => {
+    // changing who/where clears the picked staff
+    if ("type" in patch || "from_branch" in patch || "from_role" in patch) setPicked([]);
+    setF((x) => ({ ...x, ...patch }));
+  };
+  const pick = (s: Staff[]) => {
+    setPicked(s);
+    if (s.length) setF((x) => ({ ...x, qty: s.length }));
+  };
   const branchSelect = (value: string, onChange: (v: string) => void, placeholder: string) => (
     <select value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">{placeholder}</option>
@@ -89,7 +213,15 @@ export function ActionForm({
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    const body: any = { type: f.type, qty: f.qty, employee: f.employee, effective_date: f.effective_date, reason: f.reason };
+    const employee = picked.length ? picked.map((p) => `${p.name} (#${p.emp_no})`).join(", ") : f.employee;
+    const body: any = {
+      type: f.type,
+      qty: f.qty,
+      employee,
+      employee_nos: picked.map((p) => p.emp_no),
+      effective_date: f.effective_date,
+      reason: f.reason,
+    };
     if (f.type === "hire") Object.assign(body, { to_branch: f.to_branch, to_role: f.to_role });
     if (f.type === "transfer") Object.assign(body, { from_branch: f.from_branch, to_branch: f.to_branch, from_role: f.from_role, to_role: f.from_role });
     if (f.type === "promote")
@@ -100,6 +232,7 @@ export function ActionForm({
       const r = await api("/actions", { method: "POST", json: body });
       onSaved(r.approved ? "Action saved and approved." : "Action sent to Admin for approval.");
       setF({ ...EMPTY });
+      setPicked([]);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -149,17 +282,33 @@ export function ActionForm({
         {f.type === "hire" && <label>Role{roleSelect(f.to_role, (v) => set({ to_role: v }))}</label>}
         <label>
           Number of staff
-          <input type="number" min={1} max={100} value={f.qty} onChange={(e) => set({ qty: Math.max(1, parseInt(e.target.value || "1", 10)) })} />
+          <input
+            type="number"
+            min={Math.max(1, picked.length)}
+            max={100}
+            value={f.qty}
+            onChange={(e) => set({ qty: Math.max(1, picked.length, parseInt(e.target.value || "1", 10)) })}
+          />
         </label>
-        <label>
-          Employee name / no. (optional)
-          <input value={f.employee} onChange={(e) => set({ employee: e.target.value })} />
-        </label>
+        {f.type === "hire" && (
+          <label>
+            Candidate name (optional)
+            <input value={f.employee} onChange={(e) => set({ employee: e.target.value })} />
+          </label>
+        )}
         <label>
           Effective date (optional)
           <input type="date" value={f.effective_date} onChange={(e) => set({ effective_date: e.target.value })} />
         </label>
       </div>
+      {f.type !== "hire" && (
+        <div className="field">
+          <div className="field-label">
+            Who {picked.length ? <span className="muted">· {picked.length} selected</span> : <span className="muted">(optional)</span>}
+          </div>
+          <StaffPicker branch={f.from_branch} role={f.from_role} picked={picked} onChange={pick} />
+        </div>
+      )}
       <label>
         Reason {isAdmin ? "(optional)" : ""}
         <textarea rows={2} value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
