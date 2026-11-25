@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type User } from "../api";
-import { ROLES, ROLE_SHORT } from "../calc";
+import { fmt, ROLES, ROLE_SHORT } from "../calc";
+import { dialog, Icon, PageSkeleton, toast } from "../ui";
 import { codeFromLocation, parseHeadcountFile, suggestBranch, type Parsed } from "../headcountParser";
 
 type Branch = { code: string; name: string; city: string | null };
@@ -18,7 +19,7 @@ export default function Uploads({ user }: { user: User }) {
   const [src, setSrc] = useState<Record<string, Source>>({});
   const [onlyReview, setOnlyReview] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [drag, setDrag] = useState(false);
   const [error, setError] = useState("");
 
   const load = () => {
@@ -33,7 +34,6 @@ export default function Uploads({ user }: { user: User }) {
   const onFile = async (f: File | null) => {
     setFile(f);
     setParsed(null);
-    setMsg("");
     setError("");
     if (!f) return;
     try {
@@ -89,7 +89,7 @@ export default function Uploads({ user }: { user: User }) {
       fd.append("file", file);
       fd.append("payload", JSON.stringify({ period_label: label, employees: parsed.employees, rows: parsed.rows, mappings: map }));
       const r = await api("/uploads", { method: "POST", body: fd });
-      setMsg(`Uploaded: ${r.branches} branches updated. The dashboard now uses this headcount.`);
+      toast(`Headcount saved — ${r.branches} branches updated`);
       setParsed(null);
       setFile(null);
       load();
@@ -101,43 +101,88 @@ export default function Uploads({ user }: { user: User }) {
   };
 
   const del = async (id: number) => {
-    if (!confirm("Delete this upload? The dashboard will fall back to the previous one.")) return;
-    await api(`/uploads/${id}`, { method: "DELETE" }).catch((e) => setError(e.message));
+    const ok = await dialog.confirm({
+      title: "Delete this upload?",
+      message: "The dashboard will fall back to the previous headcount. The stored file is deleted too.",
+      confirmLabel: "Delete upload",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/uploads/${id}`, { method: "DELETE" });
+      toast("Upload deleted");
+    } catch (e: any) {
+      toast.error(e.message);
+    }
     load();
   };
 
   const visible = parsed?.rows.filter((r) => !onlyReview || src[r.location] === "suggested" || src[r.location] === "none") ?? [];
 
+  if (!uploads) return error ? <div className="error">{error}</div> : <PageSkeleton kpis={0} />;
+
   return (
-    <>
+    <div className="page">
       <div className="pagehead">
         <div>
-          <h1>Headcount uploads</h1>
-          <p className="muted">
-            The latest upload is the <b>actual headcount</b> used on the dashboard.
-            {isAdmin ? " Upload the weekly Headcount file (Excel with a “Data” sheet)." : " Only Admin can upload."}
+          <div className="eyebrow">{uploads[0] ? `Current · ${uploads[0].period_label}` : "No uploads yet"}</div>
+          <h1>Headcount</h1>
+          <p>
+            The latest upload is the actual headcount used across the app.
+            {isAdmin ? " Upload the weekly Headcount workbook (Excel with a “Data” sheet)." : " Only Admin can upload."}
           </p>
         </div>
       </div>
-      {msg && <div className="notice">{msg}</div>}
       {error && <div className="error">{error}</div>}
 
       {isAdmin && (
         <section className="card">
-          <h2>New upload</h2>
-          <input type="file" accept=".xlsx,.xls" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+          <div className="cardhead">
+            <h2>New upload</h2>
+            {file && <span className="muted small">{file.name}</span>}
+          </div>
+          {!parsed && (
+            <label
+              className={`dropzone ${drag ? "drag" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDrag(true);
+              }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDrag(false);
+                onFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+            >
+              <Icon name="file" />
+              <b>Drop the headcount workbook here</b>
+              <span className="small">or click to choose an .xlsx file</span>
+              <input type="file" accept=".xlsx,.xls" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
+            </label>
+          )}
           {parsed && summary && (
-            <>
-              <div className="formgrid">
+            <div className="panel">
+              <div className="formgrid" style={{ marginTop: 0 }}>
                 <label>
                   Period label
                   <input value={label} onChange={(e) => setLabel(e.target.value)} />
                 </label>
               </div>
-              <p>
-                <b>{parsed.employees}</b> active employees in <b>{parsed.rows.length}</b> locations ·{" "}
-                <b>{summary.mapped}</b> locations mapped to branches · <b>{summary.staff}</b> branch staff (SM/TL/BA/CA/CL)
-              </p>
+              <div className="stat-row">
+                <span>
+                  <b>{parsed.employees}</b> active employees
+                </span>
+                <span>
+                  <b>{parsed.rows.length}</b> locations
+                </span>
+                <span>
+                  <b>{summary.mapped}</b> mapped to branches
+                </span>
+                <span>
+                  <b>{summary.staff}</b> branch staff
+                </span>
+              </div>
               {summary.dup.length > 0 && (
                 <p className="warn-text small">Several locations map to: {summary.dup.join(", ")} — their staff will be added together.</p>
               )}
@@ -147,11 +192,11 @@ export default function Uploads({ user }: { user: User }) {
                   <p className="muted">{summary.missing.map((b) => `${b.code} ${b.name}`).join(" · ")}</p>
                 </details>
               )}
-              <label className="check">
+              <label className="check" style={{ margin: "12px 0" }}>
                 <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
                 Show only locations that need review
               </label>
-              <div className="tablewrap">
+              <div className="tablewrap tall">
                 <table className="grid">
                   <thead>
                     <tr>
@@ -190,21 +235,23 @@ export default function Uploads({ user }: { user: User }) {
                               </option>
                             ))}
                           </select>
-                          {src[r.location] === "suggested" && <span className="pill warn">suggested</span>}
+                          {src[r.location] === "suggested" && <span className="pill warn inline-pill">Suggested</span>}
                         </td>
                       </tr>
                     ))}
                     {!visible.length && (
                       <tr>
-                        <td colSpan={8} className="muted center-text">
-                          All locations are matched.
+                        <td colSpan={8} className="center-text">
+                          Every location is matched.
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-              <p className="muted small">Your mapping choices are remembered for next week's upload.</p>
+              <p className="muted small" style={{ margin: "12px 0" }}>
+                Your mapping choices are remembered for next week's upload.
+              </p>
               <div className="actions">
                 <button className="primary" disabled={busy || !label.trim()} onClick={submit}>
                   {busy ? "Uploading…" : "Save upload"}
@@ -213,13 +260,15 @@ export default function Uploads({ user }: { user: User }) {
                   Cancel
                 </button>
               </div>
-            </>
+            </div>
           )}
         </section>
       )}
 
-      <section className="card">
-        <h2>History</h2>
+      <section className="card flush reveal">
+        <div className="cardhead">
+          <h2>History</h2>
+        </div>
         <div className="tablewrap">
           <table className="grid">
             <thead>
@@ -236,24 +285,27 @@ export default function Uploads({ user }: { user: User }) {
               {uploads?.map((u, i) => (
                 <tr key={u.id}>
                   <td>
-                    {u.period_label} {i === 0 && <span className="pill approved">current</span>}
+                    {u.period_label} {i === 0 && <span className="pill approved inline-pill">Current</span>}
                   </td>
                   <td className="num">{u.branches}</td>
-                  <td className="num">{u.branch_staff ?? 0}</td>
-                  <td className="num">{u.employees || "—"}</td>
+                  <td className="num">{fmt(u.branch_staff ?? 0)}</td>
+                  <td className="num">{u.employees ? fmt(u.employees) : "—"}</td>
                   <td className="small">
                     {u.uploaded_by ?? "system"} · {u.created_at?.slice(0, 16)}
                   </td>
                   {isAdmin && (
-                    <td className="nowrap">
-                      {!!u.has_file && (
-                        <a className="ghost sm btn" href={`/api/uploads/${u.id}/file`}>
-                          Download
-                        </a>
-                      )}{" "}
-                      <button className="ghost sm" onClick={() => del(u.id)}>
-                        Delete
-                      </button>
+                    <td>
+                      <div className="rowactions">
+                        {!!u.has_file && (
+                          <a className="sm btn" href={`/api/uploads/${u.id}/file`}>
+                            <Icon name="download" />
+                            File
+                          </a>
+                        )}
+                        <button className="quiet sm" onClick={() => del(u.id)}>
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   )}
                 </tr>
@@ -262,6 +314,6 @@ export default function Uploads({ user }: { user: User }) {
           </table>
         </div>
       </section>
-    </>
+    </div>
   );
 }

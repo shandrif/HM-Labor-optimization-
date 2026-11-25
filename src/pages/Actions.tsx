@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type User } from "../api";
+import { dialog, Icon, PageSkeleton, toast } from "../ui";
 import {
   ACTION_LABEL,
   compute,
@@ -164,7 +165,7 @@ export function ActionForm({
         <textarea rows={2} value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
       </label>
       {error && <div className="error">{error}</div>}
-      <div className="actions">
+      <div className="actions" style={{ marginBottom: 16 }}>
         <button className="primary" disabled={busy || (!isAdmin && !f.reason.trim())}>
           {isAdmin ? "Save action" : "Send for approval"}
         </button>
@@ -179,107 +180,122 @@ export function ActionForm({
 }
 
 export function ActionList({ list, user, names, onChange }: { list: any[]; user: User; names: Map<string, string>; onChange: () => void }) {
-  const [error, setError] = useState("");
   const isAdmin = user.role === "admin";
-  const run = async (id: number, op: string) => {
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const run = async (a: any, op: string) => {
     let note = "";
     if (op === "reject" || op === "cancel") {
-      const p = prompt(op === "reject" ? "Reason for rejecting (optional)" : "Reason for cancelling (optional)");
+      const p = await dialog.prompt({
+        title: op === "reject" ? "Reject this action?" : isAdmin ? "Cancel this action?" : "Withdraw this request?",
+        message: describeAction(a, names),
+        label: "Reason (optional)",
+        confirmLabel: op === "reject" ? "Reject" : op === "cancel" && !isAdmin ? "Withdraw" : "Cancel action",
+        danger: true,
+      });
       if (p === null) return;
       note = p;
     }
-    setError("");
+    setBusyId(a.id);
     try {
-      await api(`/actions/${id}/${op}`, { method: "POST", json: { note } });
+      await api(`/actions/${a.id}/${op}`, { method: "POST", json: { note } });
+      toast(
+        { approve: "Action approved", reject: "Action rejected", complete: "Marked as completed", cancel: isAdmin ? "Action cancelled" : "Request withdrawn" }[op] ??
+          "Updated",
+      );
       onChange();
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
+    } finally {
+      setBusyId(null);
     }
   };
   return (
-    <>
-      {error && <div className="error">{error}</div>}
-      <div className="tablewrap">
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Employee</th>
-              <th>Effective</th>
-              <th>Requested</th>
-              <th>Reason</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <span className={`pill type-${a.type}`}>{ACTION_LABEL[a.type as keyof typeof ACTION_LABEL]}</span>{" "}
-                  {describeAction(a, names).replace(/^(Transfer|Hire|Promote|Move) /, "")}
-                </td>
-                <td className="small">{a.employee || <span className="muted">—</span>}</td>
-                <td className="small nowrap">{a.effective_date || <span className="muted">—</span>}</td>
-                <td className="small">
-                  {a.requested_by_name}
-                  <div className="muted">{a.created_at?.slice(0, 16)}</div>
-                </td>
-                <td className="small">{a.reason || <span className="muted">—</span>}</td>
-                <td>
-                  <span className={`pill ${a.status}`}>{a.status}</span>
-                  {a.review_note && <div className="muted small">{a.review_note}</div>}
-                </td>
-                <td className="nowrap">
+    <div className="tablewrap">
+      <table className="grid">
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Employee</th>
+            <th>Effective</th>
+            <th>Requested</th>
+            <th>Reason</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((a) => (
+            <tr key={a.id}>
+              <td>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                  <span className={`pill plain type-${a.type}`}>{ACTION_LABEL[a.type as keyof typeof ACTION_LABEL]}</span>
+                  <span>{describeAction(a, names).replace(/^(Transfer|Hire|Promote|Move) /, "")}</span>
+                </div>
+              </td>
+              <td className="small">{a.employee || <span className="muted">—</span>}</td>
+              <td className="small nowrap">{a.effective_date || <span className="muted">—</span>}</td>
+              <td className="small nowrap">
+                {a.requested_by_name}
+                <div className="muted">{a.created_at?.slice(0, 16)}</div>
+              </td>
+              <td className="small" style={{ maxWidth: 260 }}>
+                {a.reason || <span className="muted">—</span>}
+              </td>
+              <td>
+                <span className={`pill ${a.status}`}>{a.status}</span>
+                {a.review_note && <div className="muted small" style={{ marginTop: 4 }}>{a.review_note}</div>}
+              </td>
+              <td>
+                <div className="rowactions">
                   {isAdmin && a.status === "pending" && (
                     <>
-                      <button className="primary sm" onClick={() => run(a.id, "approve")}>
+                      <button className="primary sm" disabled={busyId === a.id} onClick={() => run(a, "approve")}>
                         Approve
-                      </button>{" "}
-                      <button className="ghost sm" onClick={() => run(a.id, "reject")}>
+                      </button>
+                      <button className="ghost sm" disabled={busyId === a.id} onClick={() => run(a, "reject")}>
                         Reject
                       </button>
                     </>
                   )}
                   {isAdmin && a.status === "approved" && (
                     <>
-                      <button className="ghost sm" title="Done — now reflected in the headcount upload" onClick={() => run(a.id, "complete")}>
-                        Mark completed
-                      </button>{" "}
-                      <button className="ghost sm" onClick={() => run(a.id, "cancel")}>
+                      <button className="ghost sm" disabled={busyId === a.id} title="Done — now reflected in the headcount upload" onClick={() => run(a, "complete")}>
+                        <Icon name="check" />
+                        Completed
+                      </button>
+                      <button className="quiet sm" disabled={busyId === a.id} onClick={() => run(a, "cancel")}>
                         Cancel
                       </button>
                     </>
                   )}
                   {!isAdmin && a.status === "pending" && a.requested_by === user.id && (
-                    <button className="ghost sm" onClick={() => run(a.id, "cancel")}>
+                    <button className="ghost sm" disabled={busyId === a.id} onClick={() => run(a, "cancel")}>
                       Withdraw
                     </button>
                   )}
-                </td>
-              </tr>
-            ))}
-            {!list.length && (
-              <tr>
-                <td colSpan={7} className="muted center-text">
-                  No actions.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </>
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!list.length && (
+            <tr>
+              <td colSpan={7} className="center-text">
+                No actions here yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 export default function Actions({ user }: { user: User }) {
-  const [list, setList] = useState<any[]>([]);
+  const [list, setList] = useState<any[] | null>(null);
   const [dash, setDash] = useState<{ branches: BranchRow[]; actions: any[] } | null>(null);
   const [status, setStatus] = useState("open");
   const [type, setType] = useState("");
   const [q, setQ] = useState("");
-  const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Partial<ActionDraft> | undefined>(undefined);
   const [showForm, setShowForm] = useState(false);
@@ -304,6 +320,9 @@ export default function Actions({ user }: { user: User }) {
   const allSuggestions = useMemo(() => suggestTransfers(computed), [computed]);
   const suggestions = allSuggestions.filter((s) => (!sugRole || s.role === sugRole) && (!sugSame || s.sameRegion));
 
+  if (error) return <div className="error">{error}</div>;
+  if (!list || !dash) return <PageSkeleton kpis={0} />;
+
   const filtered = list.filter(
     (a) =>
       (!type || a.type === type) &&
@@ -318,14 +337,15 @@ export default function Actions({ user }: { user: User }) {
   };
 
   return (
-    <>
+    <div className="page">
       <div className="pagehead">
         <div>
+          <div className="eyebrow">{counts.pending} pending · {counts.approved} approved</div>
           <h1>Staffing actions</h1>
-          <p className="muted">
-            Transfers, promotions/moves and hires. Approved actions are added to actual headcount as the{" "}
-            <b>projected headcount</b> until Admin marks them completed (once they show in a headcount upload).
-            {user.role === "manager" && " Your actions are sent to Admin for approval."}
+          <p>
+            Transfers, promotions and hires. Approved actions count towards projected headcount until Admin marks them
+            completed in a headcount upload.
+            {user.role === "manager" && " Your actions go to Admin for approval."}
           </p>
         </div>
         {canEdit && !showForm && (
@@ -336,23 +356,24 @@ export default function Actions({ user }: { user: User }) {
               setShowForm(true);
             }}
           >
+            <Icon name="plus" />
             New action
           </button>
         )}
       </div>
-      {msg && <div className="notice">{msg}</div>}
-      {error && <div className="error">{error}</div>}
 
       {showForm && (
-        <section className="card">
-          <h2>New action</h2>
+        <section className="card panel">
+          <div className="cardhead">
+            <h2>New action</h2>
+          </div>
           <ActionForm
             key={JSON.stringify(draft ?? {})}
             branches={branches}
             user={user}
             initial={draft}
             onSaved={(m) => {
-              setMsg(m);
+              toast(m);
               setShowForm(false);
               load();
             }}
@@ -361,114 +382,133 @@ export default function Actions({ user }: { user: User }) {
         </section>
       )}
 
+      <section className="card flush">
+        <div className="toolbar">
+          <div className="filters">
+            <div className="search">
+              <Icon name="search" />
+              <input placeholder="Search branch or employee" value={q} onChange={(e) => setQ(e.target.value)} />
+            </div>
+            <select value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="open">Open (pending + approved)</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="completed">Completed</option>
+              <option value="rejected">Rejected</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="all">All</option>
+            </select>
+            <select value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="">All types</option>
+              <option value="transfer">Transfers</option>
+              <option value="promote">Promotions / moves</option>
+              <option value="hire">Hires</option>
+            </select>
+          </div>
+          <div className="meta">
+            <span>{filtered.length} actions</span>
+          </div>
+        </div>
+        <ActionList list={filtered} user={user} names={names} onChange={load} />
+      </section>
+
       {canEdit && (
-        <section className="card">
+        <section className="card flush reveal">
           <div className="cardhead">
-            <h2>Suggested transfers</h2>
+            <div>
+              <h2>Suggested transfers</h2>
+              <div className="sub">
+                Surplus → short branches per role, after approved actions. Check distance and people before proposing.
+              </div>
+            </div>
             <button className="ghost sm" onClick={() => setShowSug((s) => !s)}>
               {showSug ? "Hide" : `Show ${allSuggestions.length}`}
             </button>
           </div>
-          <p className="muted small">
-            Matches branches with surplus staff in a role to branches short in that role (after approved actions),
-            same region first. Review before proposing — distance and people matter.
-          </p>
           {showSug && (
-            <div className="filters">
-              <select value={sugRole} onChange={(e) => setSugRole(e.target.value)}>
-                <option value="">All roles</option>
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {ROLE_SHORT[r]} — {ROLE_LABEL[r]}
-                  </option>
-                ))}
-              </select>
-              <label className="check">
-                <input type="checkbox" checked={sugSame} onChange={(e) => setSugSame(e.target.checked)} />
-                Same region only
-              </label>
-              <span className="muted small">{suggestions.length} shown</span>
-            </div>
-          )}
-          {showSug && (
-            <div className="tablewrap">
-              <table className="grid">
-                <thead>
-                  <tr>
-                    <th>Role</th>
-                    <th>From (surplus)</th>
-                    <th>To (short)</th>
-                    <th className="num">Staff</th>
-                    <th></th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {suggestions.map((s, i) => (
-                    <tr key={i}>
-                      <td>{ROLE_SHORT[s.role]}</td>
-                      <td>
-                        <span className="mono">{s.from}</span> {names.get(s.from)}
-                      </td>
-                      <td>
-                        <span className="mono">{s.to}</span> {names.get(s.to)}
-                      </td>
-                      <td className="num b">{s.qty}</td>
-                      <td>{!s.sameRegion && <span className="pill warn">other region</span>}</td>
-                      <td>
-                        <button
-                          className="ghost sm"
-                          onClick={() => {
-                            setDraft({ type: "transfer", from_branch: s.from, to_branch: s.to, from_role: s.role, qty: s.qty });
-                            setShowForm(true);
-                            window.scrollTo({ top: 0, behavior: "smooth" });
-                          }}
-                        >
-                          Propose
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!suggestions.length && (
+            <div className="panel">
+              <div className="toolbar" style={{ borderTop: "1px solid var(--hairline)" }}>
+                <div className="filters">
+                  <select value={sugRole} onChange={(e) => setSugRole(e.target.value)}>
+                    <option value="">All roles</option>
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_SHORT[r]} — {ROLE_LABEL[r]}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="check">
+                    <input type="checkbox" checked={sugSame} onChange={(e) => setSugSame(e.target.checked)} />
+                    Same region only
+                  </label>
+                  <span className="muted small" style={{ marginLeft: "auto" }}>
+                    {suggestions.length} shown
+                  </span>
+                </div>
+              </div>
+              <div className="tablewrap tall">
+                <table className="grid">
+                  <thead>
                     <tr>
-                      <td colSpan={6} className="muted center-text">
-                        No transfer would close a gap right now.
-                      </td>
+                      <th>Role</th>
+                      <th>From · surplus</th>
+                      <th>To · short</th>
+                      <th className="num">Staff</th>
+                      <th></th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {suggestions.map((s, i) => (
+                      <tr key={i}>
+                        <td>
+                          <span className="pill plain role">{ROLE_SHORT[s.role]}</span>
+                        </td>
+                        <td>
+                          <div className="branchcell">
+                            <span className="code">{s.from}</span>
+                            <span>{names.get(s.from)}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="branchcell">
+                            <span className="code">{s.to}</span>
+                            <span>
+                              {names.get(s.to)}
+                              {!s.sameRegion && <span className="pill warn inline-pill">Other region</span>}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="num b">{s.qty}</td>
+                        <td>
+                          <div className="rowactions">
+                            <button
+                              className="ghost sm"
+                              onClick={() => {
+                                setDraft({ type: "transfer", from_branch: s.from, to_branch: s.to, from_role: s.role, qty: s.qty });
+                                setShowForm(true);
+                                window.scrollTo({ top: 0, behavior: "smooth" });
+                              }}
+                            >
+                              Propose
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!suggestions.length && (
+                      <tr>
+                        <td colSpan={5} className="center-text">
+                          No transfer would close a gap right now.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>
       )}
-
-      <section className="card">
-        <div className="filters">
-          <input placeholder="Search branch or employee…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="open">Open (pending + approved)</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="completed">Completed</option>
-            <option value="rejected">Rejected</option>
-            <option value="cancelled">Cancelled</option>
-            <option value="all">All</option>
-          </select>
-          <select value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="">All types</option>
-            <option value="transfer">Transfers</option>
-            <option value="promote">Promotions / moves</option>
-            <option value="hire">Hires</option>
-          </select>
-        </div>
-        {status === "open" && (
-          <p className="muted small">
-            {counts.pending} pending · {counts.approved} approved
-          </p>
-        )}
-        <ActionList list={filtered} user={user} names={names} onChange={load} />
-      </section>
-    </>
+    </div>
   );
 }

@@ -10,7 +10,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   return (
     <div className="center">
       <form
-        className="card login"
+        className="login"
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
@@ -27,23 +27,20 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
       >
         <div className="brand big">
           <span className="logo">HM</span>
-          <span>Labor Optimization</span>
+          <span>Half Million</span>
         </div>
+        <h1>Labor Optimization</h1>
+        <p>Sign in to review branch headcount and productivity.</p>
         <label>
           Username
           <input autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
         </label>
         <label>
           Password
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         {error && <div className="error">{error}</div>}
-        <button className="primary" disabled={busy}>
+        <button className="primary" disabled={busy || !username || !password}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>

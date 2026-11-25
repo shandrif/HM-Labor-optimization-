@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
 import { api, type User } from "../api";
-import { fmt, fmtPct, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey } from "../calc";
+import { fmt, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_LABEL, ROLE_SHORT, type RoleKey } from "../calc";
+import { Icon, PageSkeleton, toast } from "../ui";
 import { ActionForm, ActionList } from "./Actions";
+import { Delta } from "./Dashboard";
 
 type Counts = Record<RoleKey, number>;
+const gapTone = (n: number | null) => (n == null ? "" : n > 0 ? "short" : n < 0 ? "over" : "ok");
 
 export default function BranchDetail({ code, user }: { code: string; user: User }) {
   const [d, setD] = useState<any>(null);
   const [error, setError] = useState("");
-  const [msg, setMsg] = useState("");
   const [edit, setEdit] = useState<Counts | null>(null);
   const [reason, setReason] = useState("");
   const [info, setInfo] = useState<any>(null);
   const [newAction, setNewAction] = useState(false);
   const [names, setNames] = useState<Map<string, string>>(new Map());
   const [branchList, setBranchList] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
   const isAdmin = user.role === "admin";
   const canEdit = user.role !== "viewer";
 
@@ -30,7 +33,7 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
   }, []);
 
   if (error) return <div className="error">{error}</div>;
-  if (!d) return <div className="muted">Loading…</div>;
+  if (!d) return <PageSkeleton />;
 
   const b = d.branch;
   const opt = d.optimum as Counts | null;
@@ -46,60 +49,70 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
   const pTot = sum(proj);
 
   const save = async () => {
-    setMsg("");
+    setBusy(true);
     try {
       const r = await api(`/branches/${encodeURIComponent(code)}/optimum`, { method: "POST", json: { ...edit, reason } });
-      setMsg(r.applied ? "Optimum headcount updated." : "Change sent to Admin for approval.");
+      toast(r.applied ? "Optimum headcount updated" : "Change sent to Admin for approval");
       setEdit(null);
       setReason("");
       load();
     } catch (e: any) {
-      setMsg(e.message);
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
   const saveInfo = async () => {
+    setBusy(true);
     try {
       await api(`/branches/${encodeURIComponent(code)}`, { method: "PUT", json: info });
       setInfo(null);
-      setMsg("Branch details saved.");
+      toast("Branch details saved");
       load();
     } catch (e: any) {
-      setMsg(e.message);
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <>
-      <a href="#/" className="back">
-        ← All branches
-      </a>
-      <div className="pagehead">
-        <div>
-          <h1>
-            <span className="mono">{b.code}</span> {b.name}
-          </h1>
-          <p className="muted">
-            {[b.region, b.city, b.size_tier && `Tier ${b.size_tier}`, b.store_type, b.working_hours && `${b.working_hours}h`]
-              .filter(Boolean)
-              .join(" · ")}
-            <br />
-            Area manager: {b.area_manager ?? "—"} · Ops: {b.ops_lead ?? "—"}
-          </p>
+    <div className="page">
+      <div>
+        <a href="#/" className="back">
+          <Icon name="back" />
+          All branches
+        </a>
+        <div className="pagehead">
+          <div>
+            <div className="eyebrow">
+              {[b.region, b.city, b.size_tier && `Tier ${b.size_tier}`, b.store_type, b.working_hours && `${b.working_hours}h`]
+                .filter(Boolean)
+                .join(" · ")}
+            </div>
+            <h1>
+              {b.name} <span className="code" style={{ verticalAlign: "middle", fontSize: 13 }}>{b.code}</span>
+            </h1>
+            <p>
+              Area manager <b>{b.area_manager ?? "—"}</b> · Ops <b>{b.ops_lead ?? "—"}</b>
+            </p>
+          </div>
+          {isAdmin && !info && (
+            <button className="ghost" onClick={() => setInfo({ ...b })}>
+              <Icon name="edit" />
+              Edit details
+            </button>
+          )}
         </div>
-        {isAdmin && !info && (
-          <button className="ghost" onClick={() => setInfo({ ...b })}>
-            Edit branch details
-          </button>
-        )}
       </div>
 
-      {msg && <div className="notice">{msg}</div>}
-
       {info && (
-        <section className="card">
-          <h2>Branch details</h2>
-          <div className="formgrid">
+        <section className="card panel">
+          <div className="cardhead">
+            <h2>Branch details</h2>
+          </div>
+          <div className="formgrid" style={{ marginTop: 0 }}>
             {[
               ["name", "Name"],
               ["region", "Region"],
@@ -117,14 +130,14 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                 <input value={info[k] ?? ""} onChange={(e) => setInfo({ ...info, [k]: e.target.value })} />
               </label>
             ))}
-            <label className="check">
-              <input type="checkbox" checked={!!info.active} onChange={(e) => setInfo({ ...info, active: e.target.checked ? 1 : 0 })} />
-              Active (shown on dashboard)
-            </label>
           </div>
-          <div className="actions">
-            <button className="primary" onClick={saveInfo}>
-              Save
+          <label className="check">
+            <input type="checkbox" checked={!!info.active} onChange={(e) => setInfo({ ...info, active: e.target.checked ? 1 : 0 })} />
+            Active (shown on dashboard)
+          </label>
+          <div className="actions" style={{ marginTop: 16 }}>
+            <button className="primary" onClick={saveInfo} disabled={busy}>
+              Save details
             </button>
             <button className="ghost" onClick={() => setInfo(null)}>
               Cancel
@@ -134,35 +147,43 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
       )}
 
       <section className="kpis">
-        <div className="kpi">
-          <div className="label">ADS</div>
-          <div className="value">{b.ads ? fmt(b.ads) : "—"}</div>
-          <div className="sub">ATC {b.atc ? fmt(b.atc) : "—"} · APC {b.atc ? (b.ads / b.atc).toFixed(1) : "—"}</div>
+        <div className="kpi accent">
+          <div className="label">Optimum productivity / head</div>
+          <div className="value">{fmtSar(oProd)}</div>
+          <div className="sub">
+            <Delta value={change(oProd)} /> at {oTot ?? "—"} heads
+          </div>
         </div>
         <div className="kpi">
           <div className="label">Actual productivity / head</div>
           <div className="value">{fmtSar(aProd)}</div>
-          <div className="sub">{aTot ?? "—"} heads</div>
+          <div className="sub">{aTot ?? "—"} heads on payroll</div>
         </div>
         <div className="kpi">
-          <div className="label">Optimum productivity / head</div>
-          <div className="value">{fmtSar(oProd)}</div>
-          <div className="sub">{oTot ?? "—"} heads</div>
-        </div>
-        <div className="kpi">
-          <div className="label">Change</div>
-          <div className={`value ${(change(oProd) ?? 0) > 0 ? "over" : (change(oProd) ?? 0) < 0 ? "short" : ""}`}>
-            {fmtPct(change(oProd))}
+          <div className="label">Average daily sales</div>
+          <div className="value">{b.ads ? fmt(b.ads) : "—"}</div>
+          <div className="sub">
+            {b.atc ? `${fmt(b.atc)} transactions · ${(b.ads / b.atc).toFixed(1)} per check` : "No transaction data"}
           </div>
-          <div className="sub">Optimum vs actual</div>
+        </div>
+        <div className="kpi">
+          <div className="label">Gap after actions</div>
+          <div className={`value ${gapTone(oTot != null && aTot != null ? oTot - (pTot ?? aTot) : null)}`}>
+            {oTot != null && aTot != null ? fmtSigned(oTot - (pTot ?? aTot)) : "—"}
+          </div>
+          <div className="sub">Net requirement {oTot != null && aTot != null ? fmtSigned(oTot - aTot) : "—"}</div>
         </div>
       </section>
 
-      <section className="card">
+      <section className="card flush">
         <div className="cardhead">
-          <h2>Headcount by role</h2>
+          <div>
+            <h2>Headcount by role</h2>
+            <div className="sub">{act ? `Actual from ${act.period_label}` : "No headcount uploaded for this branch"}</div>
+          </div>
           {canEdit && !edit && (
-            <button className="primary" onClick={() => setEdit({ ...(opt ?? { sm: 0, tl: 0, ba: 0, ca: 0, cl: 0 }) })}>
+            <button className={isAdmin ? "primary" : "ghost"} onClick={() => setEdit({ ...(opt ?? { sm: 0, tl: 0, ba: 0, ca: 0, cl: 0 }) })}>
+              <Icon name="edit" />
               {isAdmin ? "Edit optimum" : "Request optimum change"}
             </button>
           )}
@@ -184,14 +205,14 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
               <tr>
                 <td>Budget</td>
                 {ROLES.map((r) => (
-                  <td key={r} className="num">
+                  <td key={r} className="num muted">
                     {budget[r]}
                   </td>
                 ))}
-                <td className="num b">{sum(budget)}</td>
+                <td className="num b muted">{sum(budget)}</td>
               </tr>
               <tr>
-                <td>Actual {act && <span className="muted small">({act.period_label})</span>}</td>
+                <td>Actual</td>
                 {ROLES.map((r) => (
                   <td key={r} className="num">
                     {act ? act[r] : "—"}
@@ -208,24 +229,24 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                 ))}
                 <td className="num b">{oTot ?? "—"}</td>
               </tr>
-              <tr>
+              <tr className="sep">
                 <td>Net requirement</td>
                 {ROLES.map((r) => {
                   const g = opt && act ? opt[r] - act[r] : null;
                   return (
-                    <td key={r} className={`num b ${g && g > 0 ? "short" : g && g < 0 ? "over" : ""}`}>
+                    <td key={r} className={`num b ${gapTone(g)}`}>
                       {g == null ? "—" : fmtSigned(g)}
                     </td>
                   );
                 })}
-                <td className="num b">{oTot != null && aTot != null ? fmtSigned(oTot - aTot) : "—"}</td>
+                <td className={`num b ${gapTone(oTot != null && aTot != null ? oTot - aTot : null)}`}>
+                  {oTot != null && aTot != null ? fmtSigned(oTot - aTot) : "—"}
+                </td>
               </tr>
               {proj && (
                 <>
                   <tr>
-                    <td>
-                      Planned actions <span className="muted small">(approved)</span>
-                    </td>
+                    <td>Planned actions</td>
                     {ROLES.map((r) => (
                       <td key={r} className="num">
                         {delta![r] ? fmtSigned(delta![r]) : "0"}
@@ -247,24 +268,28 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
                     {ROLES.map((r) => {
                       const g = opt ? opt[r] - proj[r] : null;
                       return (
-                        <td key={r} className={`num b ${g && g > 0 ? "short" : g && g < 0 ? "over" : "ok"}`}>
+                        <td key={r} className={`num b ${gapTone(g)}`}>
                           {g == null ? "—" : fmtSigned(g)}
                         </td>
                       );
                     })}
-                    <td className="num b">{oTot != null ? fmtSigned(oTot - pTot!) : "—"}</td>
+                    <td className={`num b ${gapTone(oTot != null ? oTot - pTot! : null)}`}>{oTot != null ? fmtSigned(oTot - pTot!) : "—"}</td>
                   </tr>
                 </>
               )}
               {edit && (
                 <tr className="editrow">
-                  <td>New optimum</td>
+                  <td>
+                    <b>New optimum</b>
+                  </td>
                   {ROLES.map((r) => (
                     <td key={r} className="num">
                       <input
                         type="number"
                         min={0}
                         max={500}
+                        inputMode="numeric"
+                        aria-label={`New optimum ${ROLE_LABEL[r]}`}
                         value={edit[r]}
                         onChange={(e) => setEdit({ ...edit, [r]: Math.max(0, parseInt(e.target.value || "0", 10)) })}
                       />
@@ -276,54 +301,63 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
             </tbody>
           </table>
         </div>
-        {act && act.other > 0 && (
-          <p className="muted small">Plus {act.other} staff with other titles at this location (not counted in productivity).</p>
-        )}
         {edit && (
-          <div className="editbox">
-            <p>
-              New optimum productivity: <b>{fmtSar(eProd)}</b> per head ·{" "}
-              <b className={(change(eProd) ?? 0) > 0 ? "over" : (change(eProd) ?? 0) < 0 ? "short" : ""}>{fmtPct(change(eProd))}</b>{" "}
-              vs actual
-            </p>
-            <label>
-              Reason {isAdmin ? "(optional)" : ""}
-              <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
-            </label>
-            <div className="actions">
-              <button className="primary" onClick={save} disabled={!isAdmin && !reason.trim()}>
-                {isAdmin ? "Save optimum" : "Send for approval"}
-              </button>
-              <button className="ghost" onClick={() => setEdit(null)}>
-                Cancel
-              </button>
+          <div className="panel" style={{ padding: "0 24px 24px" }}>
+            <div className="editbox">
+              <div className="preview">
+                <span>
+                  New optimum productivity <b>{fmtSar(eProd)}</b> per head
+                </span>
+                <Delta value={change(eProd)} suffix=" vs actual" />
+              </div>
+              <label>
+                Reason {isAdmin ? "(optional)" : ""}
+                <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Weekend peak needs an extra barista" />
+              </label>
+              <div className="actions">
+                <button className="primary" onClick={save} disabled={busy || (!isAdmin && !reason.trim())}>
+                  {isAdmin ? "Save optimum" : "Send for approval"}
+                </button>
+                <button className="ghost" onClick={() => setEdit(null)}>
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         )}
-        {opt && (opt as any).updated_by_name && (
-          <p className="muted small">
-            Optimum last set by {(opt as any).updated_by_name} on {(opt as any).updated_at?.slice(0, 10)}
+        {(act?.other || (opt as any)?.updated_by_name) && !edit && (
+          <p className="muted small" style={{ padding: "0 24px 20px" }}>
+            {act && act.other > 0 && <>Plus {act.other} staff with other titles at this location (not counted). </>}
+            {(opt as any)?.updated_by_name && (
+              <>
+                Optimum last set by {(opt as any).updated_by_name} on {(opt as any).updated_at?.slice(0, 10)}.
+              </>
+            )}
           </p>
         )}
       </section>
 
-      <section className="card">
+      <section className="card flush reveal">
         <div className="cardhead">
-          <h2>Transfers, promotions & hires</h2>
+          <div>
+            <h2>Transfers, promotions & hires</h2>
+            <div className="sub">Approved actions count towards projected headcount</div>
+          </div>
           {canEdit && !newAction && (
             <button className="ghost" onClick={() => setNewAction(true)}>
+              <Icon name="plus" />
               New action
             </button>
           )}
         </div>
         {newAction && (
-          <div className="editbox" style={{ borderTop: 0, marginTop: 0, paddingTop: 0 }}>
+          <div className="panel" style={{ padding: "0 24px 8px" }}>
             <ActionForm
               branches={branchList}
               user={user}
               initial={{ from_branch: code, to_branch: "" }}
               onSaved={(m) => {
-                setMsg(m);
+                toast(m);
                 setNewAction(false);
                 load();
               }}
@@ -334,54 +368,63 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
         <ActionList list={d.actions} user={user} names={names} onChange={load} />
       </section>
 
-      <div className="two">
-        <section className="card">
-          <h2>Headcount history</h2>
-          <table className="roles">
-            <thead>
-              <tr>
-                <th>Period</th>
-                {ROLES.map((r) => (
-                  <th key={r} className="num">
-                    {ROLE_SHORT[r]}
-                  </th>
-                ))}
-                <th className="num">Total</th>
-                <th className="num">Prod/head</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.history.map((h: any) => {
-                const t = sum(h)!;
-                return (
-                  <tr key={h.upload_id}>
-                    <td>{h.period_label}</td>
-                    {ROLES.map((r) => (
-                      <td key={r} className="num">
-                        {h[r]}
-                      </td>
-                    ))}
-                    <td className="num b">{t}</td>
-                    <td className="num">{fmtSar(prod(t))}</td>
-                  </tr>
-                );
-              })}
-              {!d.history.length && (
+      <div className="two reveal">
+        <section className="card flush">
+          <div className="cardhead">
+            <h2>Headcount history</h2>
+          </div>
+          <div className="tablewrap">
+            <table className="grid">
+              <thead>
                 <tr>
-                  <td colSpan={8} className="muted">
-                    No headcount uploaded for this branch yet.
-                  </td>
+                  <th>Period</th>
+                  {ROLES.map((r) => (
+                    <th key={r} className="num">
+                      {ROLE_SHORT[r]}
+                    </th>
+                  ))}
+                  <th className="num">Total</th>
+                  <th className="num">Per head</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {d.history.map((h: any) => {
+                  const t = sum(h)!;
+                  return (
+                    <tr key={h.upload_id}>
+                      <td>{h.period_label}</td>
+                      {ROLES.map((r) => (
+                        <td key={r} className="num">
+                          {h[r]}
+                        </td>
+                      ))}
+                      <td className="num b">{t}</td>
+                      <td className="num">{fmtSar(prod(t))}</td>
+                    </tr>
+                  );
+                })}
+                {!d.history.length && (
+                  <tr>
+                    <td colSpan={8} className="center-text">
+                      No headcount uploaded for this branch yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
         <section className="card">
-          <h2>Optimum changes</h2>
+          <div className="cardhead">
+            <h2>Optimum changes</h2>
+          </div>
           <ul className="log">
             {d.requests.map((r: any) => (
               <li key={r.id}>
-                <span className={`pill ${r.status}`}>{r.status}</span> {ROLES.map((k) => `${ROLE_SHORT[k]} ${r[k]}`).join(" · ")}
+                <div className="row">
+                  <span className={`pill ${r.status}`}>{r.status}</span>
+                  <span>{ROLES.map((k) => `${ROLE_SHORT[k]} ${r[k]}`).join(" · ")}</span>
+                </div>
                 <div className="muted small">
                   {r.requested_by_name} · {r.created_at?.slice(0, 16)}
                   {r.reason && <> · “{r.reason}”</>}
@@ -393,6 +436,6 @@ export default function BranchDetail({ code, user }: { code: string; user: User 
           </ul>
         </section>
       </div>
-    </>
+    </div>
   );
 }

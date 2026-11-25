@@ -1,36 +1,41 @@
 import { useState } from "react";
 import { api, type User } from "../api";
+import { initials, toast } from "../ui";
 
 export default function Account({ user }: { user: User }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
 
   return (
-    <>
+    <div className="page">
       <div className="pagehead">
-        <div>
-          <h1>Account</h1>
-          <p className="muted">
-            {user.name} · <span className="mono">{user.username}</span> · {user.role}
-          </p>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+          <span className="avatar" style={{ width: 52, height: 52, fontSize: 18 }}>
+            {initials(user.name)}
+          </span>
+          <div>
+            <h1>{user.name}</h1>
+            <p>
+              <span className="mono">{user.username}</span> · <span className="cap">{user.role}</span>
+            </p>
+          </div>
         </div>
       </div>
       <section className="card narrow">
-        <h2>Change password</h2>
-        {msg && <div className="notice">{msg}</div>}
+        <div className="cardhead">
+          <h2>Change password</h2>
+        </div>
         {error && <div className="error">{error}</div>}
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            setMsg("");
             setError("");
             if (next !== confirm) return setError("New passwords do not match");
             try {
               await api("/me/password", { method: "POST", json: { current, next } });
-              setMsg("Password changed.");
+              toast("Password changed");
               setCurrent("");
               setNext("");
               setConfirm("");
@@ -54,6 +59,6 @@ export default function Account({ user }: { user: User }) {
           <button className="primary">Change password</button>
         </form>
       </section>
-    </>
+    </div>
   );
 }

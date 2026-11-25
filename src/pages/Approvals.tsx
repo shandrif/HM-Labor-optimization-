@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type User } from "../api";
 import { fmtPct, fmtSar, ROLES, ROLE_SHORT } from "../calc";
+import { dialog, PageSkeleton, toast } from "../ui";
 
 export default function Approvals({ user }: { user: User }) {
   const [status, setStatus] = useState("pending");
@@ -17,23 +18,32 @@ export default function Approvals({ user }: { user: User }) {
   }, [status]);
 
   const decide = async (id: number, decision: "approve" | "reject") => {
-    const note = decision === "reject" ? prompt("Reason for rejecting (optional)") ?? "" : "";
+    let note = "";
+    if (decision === "reject") {
+      const p = await dialog.prompt({ title: "Reject this change?", label: "Reason (optional)", confirmLabel: "Reject", danger: true });
+      if (p === null) return;
+      note = p;
+    }
     try {
       await api(`/requests/${id}/${decision}`, { method: "POST", json: { note } });
+      toast(decision === "approve" ? "Optimum change approved" : "Change rejected");
       load();
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   };
 
   const tot = (r: any, p = "") => ROLES.reduce((s, k) => s + (Number(r[p + k]) || 0), 0);
 
+  if (error) return <div className="error">{error}</div>;
+  if (!list) return <PageSkeleton kpis={0} />;
+
   return (
-    <>
+    <div className="page">
       <div className="pagehead">
         <div>
-          <h1>{isAdmin ? "Approvals" : "Optimum change requests"}</h1>
-          <p className="muted">
+          <h1>{isAdmin ? "Optimum approvals" : "Optimum change requests"}</h1>
+          <p>
             {isAdmin
               ? "Changes to optimum headcount requested by managers. Only Admin can approve."
               : "Your requests are reviewed by Admin."}
@@ -46,8 +56,7 @@ export default function Approvals({ user }: { user: User }) {
           <option value="all">All</option>
         </select>
       </div>
-      {error && <div className="error">{error}</div>}
-      <section className="card">
+      <section className="card flush">
         <div className="tablewrap">
           <table className="grid">
             <thead>
@@ -70,7 +79,7 @@ export default function Approvals({ user }: { user: User }) {
                   <tr key={r.id}>
                     <td>
                       <a href={`#/branch/${encodeURIComponent(r.branch_code)}`}>
-                        <span className="mono">{r.branch_code}</span> {r.branch_name}
+                        <span className="branchcell"><span className="code">{r.branch_code}</span>{r.branch_name}</span>
                       </a>
                     </td>
                     <td className="small">
@@ -97,13 +106,15 @@ export default function Approvals({ user }: { user: User }) {
                       {r.review_note && <div className="muted small">{r.review_note}</div>}
                     </td>
                     {isAdmin && status === "pending" && (
-                      <td className="nowrap">
-                        <button className="primary sm" onClick={() => decide(r.id, "approve")}>
-                          Approve
-                        </button>{" "}
-                        <button className="ghost sm" onClick={() => decide(r.id, "reject")}>
-                          Reject
-                        </button>
+                      <td>
+                        <div className="rowactions">
+                          <button className="primary sm" onClick={() => decide(r.id, "approve")}>
+                            Approve
+                          </button>
+                          <button className="ghost sm" onClick={() => decide(r.id, "reject")}>
+                            Reject
+                          </button>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -111,8 +122,8 @@ export default function Approvals({ user }: { user: User }) {
               })}
               {list && !list.length && (
                 <tr>
-                  <td colSpan={8} className="muted center-text">
-                    Nothing here.
+                  <td colSpan={8} className="center-text">
+                    {status === "pending" ? "You're all caught up — nothing waiting for review." : "Nothing here."}
                   </td>
                 </tr>
               )}
@@ -120,6 +131,6 @@ export default function Approvals({ user }: { user: User }) {
           </table>
         </div>
       </section>
-    </>
+    </div>
   );
 }

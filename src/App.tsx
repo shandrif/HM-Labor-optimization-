@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type User } from "./api";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -8,15 +8,30 @@ import Uploads from "./pages/Uploads";
 import Users from "./pages/Users";
 import Actions from "./pages/Actions";
 import Account from "./pages/Account";
+import { DialogHost, Icon, initials, Toaster } from "./ui";
 
 function useHashRoute() {
   const [hash, setHash] = useState(() => window.location.hash.slice(1) || "/");
   useEffect(() => {
-    const on = () => setHash(window.location.hash.slice(1) || "/");
+    const on = () => {
+      setHash(window.location.hash.slice(1) || "/");
+      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
   return hash;
+}
+
+function useScrolled() {
+  const [s, setS] = useState(false);
+  useEffect(() => {
+    const on = () => setS(window.scrollY > 4);
+    on();
+    window.addEventListener("scroll", on, { passive: true });
+    return () => window.removeEventListener("scroll", on);
+  }, []);
+  return s;
 }
 
 export default function App() {
@@ -32,18 +47,37 @@ export default function App() {
     return () => window.removeEventListener("hm:unauthorized", onUnauth);
   }, []);
 
-  if (user === undefined) return <div className="center muted">Loading…</div>;
-  if (!user) return <Login onLogin={setUser} />;
+  if (user === undefined) return <div className="center" />;
+  if (!user)
+    return (
+      <>
+        <Login onLogin={setUser} />
+        <Toaster />
+      </>
+    );
+  return <Shell user={user} route={route} onSignOut={() => setUser(null)} />;
+}
 
+function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOut: () => void }) {
   const isAdmin = user.role === "admin";
+  const scrolled = useScrolled();
+  const [pending, setPending] = useState({ actions: 0, optimum: 0 });
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    Promise.all([api("/actions?status=pending"), api("/requests?status=pending")])
+      .then(([a, r]) => setPending({ actions: a.actions.length, optimum: r.requests.length }))
+      .catch(() => {});
+  }, [route, isAdmin]);
+
   const nav = [
-    { href: "/", label: "Dashboard" },
-    { href: "/actions", label: "Actions" },
-    { href: "/approvals", label: isAdmin ? "Optimum approvals" : "Optimum requests" },
-    { href: "/uploads", label: "Headcount" },
-    ...(isAdmin ? [{ href: "/users", label: "Users" }] : []),
+    { href: "/", label: "Dashboard", icon: "dashboard" },
+    { href: "/actions", label: "Actions", icon: "actions", count: pending.actions },
+    { href: "/approvals", label: isAdmin ? "Approvals" : "Requests", icon: "approvals", count: pending.optimum },
+    { href: "/uploads", label: "Headcount", icon: "upload" },
+    ...(isAdmin ? [{ href: "/users", label: "Users", icon: "users" }] : []),
   ];
-  const active = (href: string) => (href === "/" ? route === "/" || route.startsWith("/branch/") : route.startsWith(href));
+  const isActive = (href: string) => (href === "/" ? route === "/" || route.startsWith("/branch/") : route.startsWith(href));
 
   let page;
   if (route.startsWith("/branch/")) page = <BranchDetail code={decodeURIComponent(route.slice(8))} user={user} />;
@@ -55,35 +89,76 @@ export default function App() {
   else page = <Dashboard user={user} />;
 
   return (
-    <div className="shell">
+    <div className={`shell ${scrolled ? "scrolled" : ""}`}>
       <header className="topbar">
-        <div className="brand">
-          <span className="logo">HM</span>
-          <span>Labor Optimization</span>
-        </div>
-        <nav>
-          {nav.map((n) => (
-            <a key={n.href} href={`#${n.href}`} className={active(n.href) ? "on" : ""}>
-              {n.label}
-            </a>
-          ))}
-        </nav>
-        <div className="who">
-          <a href="#/account" title="Account">
-            {user.name} <span className="pill">{user.role}</span>
+        <div className="topbar-inner">
+          <a href="#/" className="brand" aria-label="Dashboard">
+            <span className="logo">HM</span>
+            <span className="brand-text">Labor Optimization</span>
           </a>
-          <button
-            className="ghost"
-            onClick={async () => {
-              await api("/logout", { method: "POST" }).catch(() => {});
-              setUser(null);
-            }}
-          >
-            Sign out
-          </button>
+          <Nav items={nav} isActive={isActive} />
+          <div className="who">
+            <a href="#/account" className="userchip" title="Account">
+              <span className="avatar">{initials(user.name)}</span>
+              <span className="meta">
+                <span>{user.name}</span>
+                <span>{user.role}</span>
+              </span>
+            </a>
+            <button
+              className="quiet icon-btn signout"
+              title="Sign out"
+              aria-label="Sign out"
+              onClick={async () => {
+                await api("/logout", { method: "POST" }).catch(() => {});
+                onSignOut();
+              }}
+            >
+              <Icon name="logout" />
+            </button>
+          </div>
         </div>
       </header>
-      <main>{page}</main>
+      <main key={route.startsWith("/branch/") ? route : route.split("/")[1]}>{page}</main>
+      <Toaster />
+      <DialogHost />
     </div>
+  );
+}
+
+function Nav({
+  items,
+  isActive,
+}: {
+  items: { href: string; label: string; icon: string; count?: number }[];
+  isActive: (h: string) => boolean;
+}) {
+  const ref = useRef<HTMLElement>(null);
+  const [ind, setInd] = useState<{ x: number; w: number } | null>(null);
+  const activeHref = items.find((i) => isActive(i.href))?.href;
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = ref.current?.querySelector<HTMLAnchorElement>("a.on");
+      if (!el) return setInd(null);
+      setInd({ x: el.offsetLeft, w: el.offsetWidth });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (ref.current) ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, [activeHref, items.length, items.map((i) => i.count).join()]);
+
+  return (
+    <nav className="nav" ref={ref}>
+      {ind && <span className="nav-indicator" style={{ transform: `translateX(${ind.x}px)`, width: ind.w }} />}
+      {items.map((n) => (
+        <a key={n.href} href={`#${n.href}`} className={isActive(n.href) ? "on" : ""} title={n.label}>
+          <Icon name={n.icon} />
+          <span className="label">{n.label}</span>
+          {!!n.count && <span className="count">{n.count}</span>}
+        </a>
+      ))}
+    </nav>
   );
 }

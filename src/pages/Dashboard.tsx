@@ -1,21 +1,51 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type User } from "../api";
-import { compute, planDeltas, fmt, fmtPct, fmtSar, fmtSigned, ROLES, ROLE_SHORT, totals, type BranchRow, type Computed } from "../calc";
 import * as XLSX from "xlsx";
+import { api, type User } from "../api";
+import { compute, fmt, fmtPct, fmtSar, fmtSigned, planDeltas, ROLES, ROLE_SHORT, totals, type BranchRow, type Computed } from "../calc";
+import { Icon, PageSkeleton } from "../ui";
 
 type SortKey = "code" | "name" | "region" | "ads" | "actual" | "optimum" | "gap" | "projGap" | "actProd" | "optProd" | "change";
+type Filters = { q: string; region: string; am: string; ops: string; tier: string; type: string; status: string };
+const EMPTY: Filters = { q: "", region: "", am: "", ops: "", tier: "", type: "", status: "" };
+const STORE = "hm.dashboard.v1";
+
+function load<T>(fallback: T): T {
+  try {
+    const v = sessionStorage.getItem(STORE);
+    return v ? { ...fallback, ...JSON.parse(v) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const tone = (n: number | null | undefined) => (n == null || n === 0 ? "" : n > 0 ? "over" : "short");
+const gapTone = (n: number) => (n > 0 ? "short" : n < 0 ? "over" : "ok");
+
+export function Delta({ value, suffix = "" }: { value: number | null; suffix?: string }) {
+  if (value == null) return null;
+  const cls = value > 0.0005 ? "up" : value < -0.0005 ? "down" : "zero";
+  return (
+    <span className={`delta ${cls}`}>
+      {fmtPct(value)}
+      {suffix}
+    </span>
+  );
+}
 
 export default function Dashboard({ user }: { user: User }) {
   const [data, setData] = useState<{ upload: any; branches: BranchRow[]; actions: any[] } | null>(null);
   const [error, setError] = useState("");
-  const [q, setQ] = useState("");
-  const [region, setRegion] = useState("");
-  const [am, setAm] = useState("");
-  const [ops, setOps] = useState("");
-  const [tier, setTier] = useState("");
-  const [type, setType] = useState("");
-  const [status, setStatus] = useState("");
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "change", dir: -1 });
+  const [state, setState] = useState(() => load({ f: EMPTY, sort: { key: "change" as SortKey, dir: -1 as 1 | -1 } }));
+  const { f, sort } = state;
+  const setF = (patch: Partial<Filters>) => setState((s) => ({ ...s, f: { ...s.f, ...patch } }));
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORE, JSON.stringify(state));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [state]);
 
   useEffect(() => {
     api("/dashboard").then(setData).catch((e) => setError(e.message));
@@ -28,45 +58,52 @@ export default function Dashboard({ user }: { user: User }) {
   const opts = (k: keyof BranchRow) => [...new Set(all.map((b) => b[k]).filter(Boolean) as string[])].sort();
 
   const rows = useMemo(() => {
-    const ql = q.trim().toLowerCase();
-    const f = all.filter(
+    const ql = f.q.trim().toLowerCase();
+    const out = all.filter(
       (b) =>
-        (!ql || `${b.code} ${b.name} ${b.city}`.toLowerCase().includes(ql)) &&
-        (!region || b.region === region) &&
-        (!am || b.area_manager === am) &&
-        (!ops || b.ops_lead === ops) &&
-        (!tier || b.size_tier === tier) &&
-        (!type || b.store_type === type) &&
-        (!status ||
-          (status === "over" && b.hasActual && b.gap < 0) ||
-          (status === "under" && b.hasActual && b.gap > 0) ||
-          (status === "ok" && b.hasActual && b.gap === 0) ||
-          (status === "open" && b.hasActual && b.hasOptimum && b.projGap !== 0) ||
-          (status === "nodata" && (!b.hasActual || !b.hasOptimum || !b.ads)) ||
-          (status === "pending" && b.pending > 0)),
+        (!ql || `${b.code} ${b.name} ${b.city} ${b.area_manager}`.toLowerCase().includes(ql)) &&
+        (!f.region || b.region === f.region) &&
+        (!f.am || b.area_manager === f.am) &&
+        (!f.ops || b.ops_lead === f.ops) &&
+        (!f.tier || b.size_tier === f.tier) &&
+        (!f.type || b.store_type === f.type) &&
+        (!f.status ||
+          (f.status === "over" && b.hasActual && b.gap < 0) ||
+          (f.status === "under" && b.hasActual && b.gap > 0) ||
+          (f.status === "ok" && b.hasActual && b.gap === 0) ||
+          (f.status === "open" && b.hasActual && b.hasOptimum && b.projGap !== 0) ||
+          (f.status === "nodata" && (!b.hasActual || !b.hasOptimum || !b.ads)) ||
+          (f.status === "pending" && b.pending > 0)),
     );
     const k = sort.key;
-    return f.sort((a, b) => {
+    return out.sort((a, b) => {
       const av = a[k] as any, bv = b[k] as any;
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
       return (typeof av === "string" ? av.localeCompare(bv) : av - bv) * sort.dir;
     });
-  }, [all, q, region, am, ops, tier, type, status, sort]);
+  }, [all, f, sort]);
 
   const t = useMemo(() => totals(rows), [rows]);
+  const filtered = Object.values(f).some(Boolean);
 
   if (error) return <div className="error">{error}</div>;
-  if (!data) return <div className="muted">Loading…</div>;
+  if (!data) return <PageSkeleton kpis={5} />;
 
   const th = (key: SortKey, label: string, cls = "") => (
     <th
-      className={`sortable ${cls}`}
-      onClick={() => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : key === "code" || key === "name" || key === "region" ? 1 : -1 }))}
+      className={`sortable ${cls} ${sort.key === key ? "active" : ""} ${sort.key === key && sort.dir === 1 ? "asc" : ""}`}
+      onClick={() =>
+        setState((s) => ({
+          ...s,
+          sort: { key, dir: s.sort.key === key ? (s.sort.dir === 1 ? -1 : 1) : ["code", "name", "region"].includes(key) ? 1 : -1 },
+        }))
+      }
+      aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}
     >
       {label}
-      {sort.key === key ? (sort.dir === 1 ? " ↑" : " ↓") : ""}
+      <span className="arrow">↓</span>
     </th>
   );
 
@@ -98,31 +135,30 @@ export default function Dashboard({ user }: { user: User }) {
   };
 
   return (
-    <>
+    <div className="page">
       <div className="pagehead">
         <div>
+          <div className="eyebrow">
+            {data.upload ? `Headcount · ${data.upload.period_label}` : "No headcount uploaded yet"}
+          </div>
           <h1>Labor productivity</h1>
-          <p className="muted">
-            Actual headcount from{" "}
-            {data.upload ? (
-              <b>
-                {data.upload.period_label}
-              </b>
-            ) : (
-              "— no upload yet"
-            )}
-            {data.upload && <> · uploaded {data.upload.created_at?.slice(0, 10)}</>} · Productivity/head = ADS ÷ headcount
-          </p>
+          <p>Sales per head at actual vs optimum staffing, across {all.length} branches.</p>
         </div>
-        <button className="ghost" onClick={exportXlsx}>
-          Export to Excel
-        </button>
+        <div className="headactions">
+          <button className="ghost" onClick={exportXlsx}>
+            <Icon name="download" />
+            Export
+          </button>
+        </div>
       </div>
 
       <section className="kpis">
-        <div className="kpi">
-          <div className="label">Branches</div>
-          <div className="value">{rows.length}</div>
+        <div className="kpi accent">
+          <div className="label">Optimum productivity / head</div>
+          <div className="value">{fmtSar(t.optProd)}</div>
+          <div className="sub">
+            <Delta value={t.change} /> vs actual {fmtSar(t.actProd)} SAR
+          </div>
         </div>
         <div className="kpi">
           <div className="label">Actual headcount</div>
@@ -132,125 +168,152 @@ export default function Dashboard({ user }: { user: User }) {
         <div className="kpi">
           <div className="label">Optimum headcount</div>
           <div className="value">{fmt(t.optimum)}</div>
-          <div className={`sub ${t.gap < 0 ? "over" : t.gap > 0 ? "short" : ""}`}>
-            Net requirement {fmtSigned(t.gap)}
+          <div className="sub">
+            <span className={`delta ${t.gap > 0 ? "down" : t.gap < 0 ? "up" : "zero"}`}>{fmtSigned(t.gap)}</span>
+            {t.gap > 0 ? "needed" : t.gap < 0 ? "surplus" : "balanced"}
           </div>
         </div>
         <div className="kpi">
-          <div className="label">Actual productivity / head</div>
-          <div className="value">{fmtSar(t.actProd)}</div>
-          <div className="sub">SAR per day</div>
-        </div>
-        <div className="kpi">
-          <div className="label">Optimum productivity / head</div>
-          <div className="value">{fmtSar(t.optProd)}</div>
-          <div className={`sub ${t.change && t.change > 0 ? "over" : t.change && t.change < 0 ? "short" : ""}`}>
-            {fmtPct(t.change)} vs actual
+          <div className="label">Gap after actions</div>
+          <div className={`value ${gapTone(t.projGap)}`}>{fmtSigned(t.projGap)}</div>
+          <div className="sub">
+            {data.actions.length
+              ? `${data.actions.length} approved action${data.actions.length === 1 ? "" : "s"} · net ${fmtSigned(t.planned)}`
+              : "No approved actions"}
           </div>
         </div>
       </section>
 
-      <section className="card">
-        <h2>By role</h2>
+      <section className="card flush reveal">
+        <div className="cardhead">
+          <div>
+            <h2>Headcount by role</h2>
+            <div className="sub">{filtered ? `${rows.length} branches match your filters` : "All branches"}</div>
+          </div>
+        </div>
         <div className="tablewrap">
-        <table className="roles">
-          <thead>
-            <tr>
-              <th></th>
-              {ROLES.map((r) => (
-                <th key={r} className="num">
-                  {ROLE_SHORT[r]}
-                </th>
+          <table className="roles">
+            <thead>
+              <tr>
+                <th></th>
+                {ROLES.map((r) => (
+                  <th key={r} className="num">
+                    {ROLE_SHORT[r]}
+                  </th>
+                ))}
+                <th className="num">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(["budget", "actual", "optimum"] as const).map((k) => (
+                <tr key={k}>
+                  <td className="cap">{k}</td>
+                  {ROLES.map((r) => (
+                    <td key={r} className="num">
+                      {fmt(t.byRole[r][k])}
+                    </td>
+                  ))}
+                  <td className="num b">{fmt(t[k])}</td>
+                </tr>
               ))}
-              <th className="num">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(["budget", "actual", "optimum"] as const).map((k) => (
-              <tr key={k}>
-                <td className="cap">{k}</td>
+              <tr className="sep">
+                <td>Net requirement</td>
+                {ROLES.map((r) => {
+                  const g = t.byRole[r].optimum - t.byRole[r].actual;
+                  return (
+                    <td key={r} className={`num b ${gapTone(g)}`}>
+                      {fmtSigned(g)}
+                    </td>
+                  );
+                })}
+                <td className={`num b ${gapTone(t.gap)}`}>{fmtSigned(t.gap)}</td>
+              </tr>
+              <tr>
+                <td>Planned actions</td>
                 {ROLES.map((r) => (
                   <td key={r} className="num">
-                    {fmt(t.byRole[r][k])}
+                    {t.byRole[r].planned ? fmtSigned(t.byRole[r].planned) : "0"}
                   </td>
                 ))}
-                <td className="num b">{fmt(t[k])}</td>
+                <td className="num b">{t.planned ? fmtSigned(t.planned) : "0"}</td>
               </tr>
-            ))}
-            <tr>
-              <td>Net requirement</td>
-              {ROLES.map((r) => {
-                const g = t.byRole[r].optimum - t.byRole[r].actual;
-                return (
-                  <td key={r} className={`num b ${g > 0 ? "short" : g < 0 ? "over" : ""}`}>
-                    {fmtSigned(g)}
-                  </td>
-                );
-              })}
-              <td className={`num b ${t.gap > 0 ? "short" : t.gap < 0 ? "over" : ""}`}>{fmtSigned(t.gap)}</td>
-            </tr>
-            <tr>
-              <td>Planned actions</td>
-              {ROLES.map((r) => (
-                <td key={r} className="num">
-                  {t.byRole[r].planned ? fmtSigned(t.byRole[r].planned) : "0"}
-                </td>
-              ))}
-              <td className="num b">{t.planned ? fmtSigned(t.planned) : "0"}</td>
-            </tr>
-            <tr>
-              <td>Gap after actions</td>
-              {ROLES.map((r) => {
-                const g = t.byRole[r].optimum - t.byRole[r].actual - t.byRole[r].planned;
-                return (
-                  <td key={r} className={`num b ${g > 0 ? "short" : g < 0 ? "over" : "ok"}`}>
-                    {fmtSigned(g)}
-                  </td>
-                );
-              })}
-              <td className={`num b ${t.projGap > 0 ? "short" : t.projGap < 0 ? "over" : "ok"}`}>{fmtSigned(t.projGap)}</td>
-            </tr>
-          </tbody>
-        </table>
+              <tr>
+                <td>Gap after actions</td>
+                {ROLES.map((r) => {
+                  const g = t.byRole[r].optimum - t.byRole[r].actual - t.byRole[r].planned;
+                  return (
+                    <td key={r} className={`num b ${gapTone(g)}`}>
+                      {fmtSigned(g)}
+                    </td>
+                  );
+                })}
+                <td className={`num b ${gapTone(t.projGap)}`}>{fmtSigned(t.projGap)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <p className="muted small">Net requirement = Optimum − Actual. Positive: staff needed. Negative: surplus. Planned actions = approved
-          transfers, promotions and hires not yet marked completed.</p>
+        <div className="legend" style={{ padding: "0 24px 20px" }}>
+          <span>
+            <i style={{ background: "var(--short)" }} /> Staff needed
+          </span>
+          <span>
+            <i style={{ background: "var(--over)" }} /> Surplus
+          </span>
+          <span>
+            <i style={{ background: "var(--ok)" }} /> Balanced
+          </span>
+          <span>Net requirement = Optimum − Actual</span>
+        </div>
       </section>
 
-      <section className="card">
-        <div className="filters">
-          <input placeholder="Search branch, code, city…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <Select value={region} onChange={setRegion} label="All regions" options={opts("region")} />
-          <Select value={am} onChange={setAm} label="All area managers" options={opts("area_manager")} />
-          <Select value={ops} onChange={setOps} label="All ops leads" options={opts("ops_lead")} />
-          <Select value={tier} onChange={setTier} label="All tiers" options={opts("size_tier")} />
-          <Select value={type} onChange={setType} label="DT & NDT" options={opts("store_type")} />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="over">Over-staffed</option>
-            <option value="under">Under-staffed</option>
-            <option value="ok">On optimum</option>
-            <option value="open">Gap left after actions</option>
-            <option value="pending">Pending request</option>
-            <option value="nodata">Missing data</option>
-          </select>
+      <section className="card flush reveal">
+        <div className="toolbar">
+          <div className="filters">
+            <div className="search">
+              <Icon name="search" />
+              <input placeholder="Search branch, code, city, manager" value={f.q} onChange={(e) => setF({ q: e.target.value })} />
+            </div>
+            <Select value={f.region} onChange={(v) => setF({ region: v })} label="All regions" options={opts("region")} />
+            <Select value={f.am} onChange={(v) => setF({ am: v })} label="All area managers" options={opts("area_manager")} />
+            <Select value={f.ops} onChange={(v) => setF({ ops: v })} label="All ops leads" options={opts("ops_lead")} />
+            <Select value={f.tier} onChange={(v) => setF({ tier: v })} label="All tiers" options={opts("size_tier")} />
+            <Select value={f.type} onChange={(v) => setF({ type: v })} label="DT & NDT" options={opts("store_type")} />
+            <select value={f.status} onChange={(e) => setF({ status: e.target.value })}>
+              <option value="">Any status</option>
+              <option value="over">Surplus</option>
+              <option value="under">Staff needed</option>
+              <option value="ok">On optimum</option>
+              <option value="open">Gap after actions</option>
+              <option value="pending">Pending request</option>
+              <option value="nodata">Missing data</option>
+            </select>
+          </div>
+          <div className="meta">
+            <span>
+              {rows.length} of {all.length} branches
+            </span>
+            {filtered && (
+              <button className="linkbtn" onClick={() => setF(EMPTY)}>
+                Clear filters
+              </button>
+            )}
+          </div>
         </div>
-        <div className="tablewrap">
+        <div className="tablewrap tall">
           <table className="grid">
             <thead>
               <tr>
-                {th("code", "Code")}
                 {th("name", "Branch")}
                 {th("region", "Region")}
-                <th>Tier</th>
                 {th("ads", "ADS", "num")}
-                {th("actual", "Actual HC", "num")}
-                {th("optimum", "Optimum HC", "num")}
+                {th("actual", "Actual", "num")}
+                {th("optimum", "Optimum", "num")}
                 {th("gap", "Net req", "num")}
                 {th("projGap", "After actions", "num")}
-                {th("actProd", "Actual prod/head", "num")}
-                {th("optProd", "Optimum prod/head", "num")}
+                {th("actProd", "Actual / head", "num")}
+                {th("optProd", "Optimum / head", "num")}
                 {th("change", "Change", "num")}
+                <th aria-hidden="true"></th>
               </tr>
             </thead>
             <tbody>
@@ -259,7 +322,7 @@ export default function Dashboard({ user }: { user: User }) {
               ))}
               {!rows.length && (
                 <tr>
-                  <td colSpan={12} className="muted center-text">
+                  <td colSpan={11} className="center-text">
                     No branches match these filters.
                   </td>
                 </tr>
@@ -269,36 +332,45 @@ export default function Dashboard({ user }: { user: User }) {
         </div>
       </section>
       {user.role === "viewer" && <p className="muted small">You have view-only access.</p>}
-    </>
+    </div>
   );
 }
 
 function Row({ b }: { b: Computed }) {
+  const go = () => (window.location.hash = `/branch/${encodeURIComponent(b.code)}`);
   return (
-    <tr className="click" onClick={() => (window.location.hash = `/branch/${encodeURIComponent(b.code)}`)}>
-      <td className="mono">{b.code}</td>
+    <tr className="click" onClick={go}>
       <td>
-        {b.name}
-        {b.pending > 0 && <span className="pill warn">pending</span>}
+        <div className="branchcell">
+          <span className="code">{b.code}</span>
+          <div>
+            <div className="name">
+              {b.name}
+              {b.pending > 0 && <span className="pill warn inline-pill">Pending</span>}
+            </div>
+            <div className="sub">
+              {[b.city, b.size_tier && `Tier ${b.size_tier}`, b.store_type].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        </div>
       </td>
-      <td>{b.region}</td>
-      <td>
-        {b.size_tier}
-        {b.store_type ? ` · ${b.store_type}` : ""}
-      </td>
+      <td className="muted">{b.region}</td>
       <td className="num">{b.ads ? fmt(b.ads) : "—"}</td>
       <td className="num">{b.hasActual ? b.actual : "—"}</td>
       <td className="num">{b.hasOptimum ? b.optimum : "—"}</td>
-      <td className={`num b ${b.gap > 0 ? "short" : b.gap < 0 ? "over" : ""}`}>
+      <td className={`num b ${b.hasActual && b.hasOptimum ? gapTone(b.gap) : ""}`}>
         {b.hasActual && b.hasOptimum ? fmtSigned(b.gap) : "—"}
       </td>
-      <td className={`num ${b.projGap > 0 ? "short" : b.projGap < 0 ? "over" : "ok"}`} title={b.planned ? `Planned ${fmtSigned(b.planned)}` : ""}>
-        {b.hasActual && b.hasOptimum ? (b.projGap === 0 ? "✓ 0" : fmtSigned(b.projGap)) : "—"}
+      <td className={`num ${b.hasActual && b.hasOptimum ? gapTone(b.projGap) : ""}`} title={b.planned ? `Planned ${fmtSigned(b.planned)}` : ""}>
+        {b.hasActual && b.hasOptimum ? (b.projGap === 0 ? "✓" : fmtSigned(b.projGap)) : "—"}
       </td>
       <td className="num">{fmtSar(b.actProd)}</td>
       <td className="num">{fmtSar(b.optProd)}</td>
-      <td className={`num b ${b.change && b.change > 0 ? "over" : b.change && b.change < 0 ? "short" : ""}`}>
-        {fmtPct(b.change)}
+      <td className={`num b ${tone(b.change)}`}>{fmtPct(b.change)}</td>
+      <td className="num" style={{ width: 28 }}>
+        <span className="rowgo">
+          <Icon name="chevron" className="" />
+        </span>
       </td>
     </tr>
   );
