@@ -9,6 +9,7 @@ import Users from "./pages/Users";
 import Actions from "./pages/Actions";
 import Account from "./pages/Account";
 import { DialogHost, Icon, initials, Toaster } from "./ui";
+import Backdrop from "./Backdrop";
 
 function useHashRoute() {
   const [hash, setHash] = useState(() => window.location.hash.slice(1) || "/");
@@ -47,15 +48,21 @@ export default function App() {
     return () => window.removeEventListener("hm:unauthorized", onUnauth);
   }, []);
 
-  if (user === undefined) return <div className="center" />;
+  if (user === undefined) return <Backdrop />;
   if (!user)
     return (
       <>
+        <Backdrop />
         <Login onLogin={setUser} />
         <Toaster />
       </>
     );
-  return <Shell user={user} route={route} onSignOut={() => setUser(null)} />;
+  return (
+    <>
+      <Backdrop />
+      <Shell user={user} route={route} onSignOut={() => setUser(null)} />
+    </>
+  );
 }
 
 function Shell({ user, route, onSignOut }: { user: User; route: string; onSignOut: () => void }) {
